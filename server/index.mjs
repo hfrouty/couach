@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { createAccounts, normalizeEmail } from './accounts.mjs';
+import { createCampusAuth } from './campus-auth.mjs';
 import { createRecords } from './records.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -21,8 +22,8 @@ const publicFiles = new Map([
   ['/admin', 'admin.html'],
   ['/admin/', 'admin.html'],
   ...[
-    'app.mjs', 'admin.mjs', 'matching.mjs', 'sample-data.mjs', 'study-tools.mjs', 'icons.mjs',
-    'styles.css', 'tools.css', 'account.css', 'admin.css',
+    'app.mjs', 'admin.mjs', 'campus-map.mjs', 'matching.mjs', 'sample-data.mjs', 'study-tools.mjs', 'icons.mjs',
+    'styles.css', 'tools.css', 'account.css', 'admin.css', 'campus-map.css',
     'assets/icon.svg', 'assets/library-study.webp',
   ].map(name => [`/${name}`, name]),
 ]);
@@ -33,6 +34,7 @@ const authLimits = {
   register: { ip: 20, account: 5 },
   setup: { ip: 8 },
   password: { ip: 8 },
+  campus: { ip: 12 },
 };
 
 function fail(status, message, code) {
@@ -48,6 +50,11 @@ function throttle(seconds) {
 function sendJson(response, status, body) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   response.end(JSON.stringify(body));
+}
+
+function redirect(response, location) {
+  response.writeHead(303, { Location: String(location), 'Cache-Control': 'no-store' });
+  response.end();
 }
 
 function readJson(request) {
@@ -84,7 +91,7 @@ function applyHeaders(response) {
   response.setHeader('X-Frame-Options', 'DENY');
   response.setHeader('Referrer-Policy', 'same-origin');
   response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  response.setHeader('Content-Security-Policy', "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'");
+  response.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' https://tile.openstreetmap.org; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'");
 }
 
 function requireSameOrigin(request, railway) {
@@ -137,6 +144,7 @@ export function createStudyServer({
   databaseFile,
   publicHttps = false,
   adminSetupToken = '',
+  campusAuth = null,
 }) {
   if (databaseFile !== ':memory:') mkdirSync(dirname(databaseFile), { recursive: true });
   const db = new DatabaseSync(databaseFile, { timeout: 5000 });
@@ -161,14 +169,34 @@ export function createStudyServer({
     }
   }
 
+  async function handleCampusAuth(request, response, route) {
+    if (request.method !== 'GET') fail(404, '找不到這個功能。');
+    if (!campusAuth) return redirect(response, '/?campus=unavailable#explore');
+    const account = accounts.current(request);
+    try {
+      if (route.endsWith('/start')) {
+        throttleAuth(request, 'campus', {});
+        return redirect(response, await campusAuth.start(request, response, account));
+      }
+      const authorization = await campusAuth.complete(request, response, account);
+      accounts.campusSignIn(authorization, response);
+      return redirect(response, '/#explore');
+    } catch (error) {
+      if (!error.status) console.error('StudyMate campus sign-in could not be completed.');
+      const result = { 403: 'school', 409: account ? 'account' : 'link', 429: 'busy', 503: 'unavailable' }[error.status] || 'failed';
+      return redirect(response, `/?campus=${result}#explore`);
+    }
+  }
+
   async function handleApi(request, response, method, route) {
     if (method !== 'GET') requireSameOrigin(request, publicHttps);
     const account = await accounts.current(request);
     const adminSetup = adminSetupToken.length >= 32 && !accounts.adminConfigured();
-    if (method === 'GET' && route === '/api/account') return { account, adminSetup };
+    if (method === 'GET' && route === '/api/account') return { account, adminSetup, campusLogin: Boolean(campusAuth) };
     if (method === 'POST' && ['/api/auth/register', '/api/auth/login', '/api/auth/setup'].includes(route)) {
       const action = route.split('/').at(-1);
-      const authenticated = await performAuth(request, action, data => accounts[action](data, response));
+      if (campusAuth && action === 'register') fail(403, '請使用暨大學生帳號加入 StudyMate。');
+      const authenticated = await performAuth(request, action, data => accounts[action](data, response, Boolean(campusAuth)));
       return { account: authenticated };
     }
     const expectedAccount = request.headers['x-studymate-account'];
@@ -180,6 +208,9 @@ export function createStudyServer({
       return { account: null };
     }
     if (!account) fail(401, '請先登入 StudyMate。');
+    if (campusAuth && account.role === 'student' && !account.campusId && (route === '/api/study' || route.startsWith('/api/study/'))) {
+      fail(403, '請先連結暨大學生帳號。');
+    }
     if (method === 'PATCH' && route === '/api/profile') {
       return { account: await accounts.updateProfile(account, await readJson(request)) };
     }
@@ -223,6 +254,9 @@ export function createStudyServer({
       const method = request.method;
       const route = new URL(request.url, 'http://local').pathname;
       if (method === 'GET' && route === '/health') return sendJson(response, 200, { ok: true });
+      if (route === '/api/auth/campus/start' || route === '/api/auth/campus/callback') {
+        return await handleCampusAuth(request, response, route);
+      }
       if (route.startsWith('/api/')) {
         const result = await handleApi(request, response, method, route);
         return sendJson(response, 200, result);
@@ -258,11 +292,21 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     throw new Error('Attach a Railway volume before starting StudyMate. Mount it at /app/data.');
   }
   const databaseFile = volume ? join(volume, 'studymate.sqlite') : join(root, 'data', 'studymate.sqlite');
+  const port = Number(process.env.PORT ?? 8000);
+  const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+  const publicOrigin = process.env.STUDYMATE_PUBLIC_ORIGIN?.trim()
+    || (onRailway && process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : `http://localhost:${port}`);
+  const publicUrl = URL.parse(publicOrigin);
+  const campusAuth = clientId && clientSecret && publicUrl && !publicUrl.username && !publicUrl.password
+    && (publicUrl.protocol === 'https:' || (!onRailway && publicUrl.protocol === 'http:'))
+    ? createCampusAuth({ origin: publicUrl.origin, clientId, clientSecret, secureCookies: onRailway })
+    : null;
   const server = createStudyServer({
     databaseFile,
     publicHttps: onRailway,
     adminSetupToken: process.env.ADMIN_SETUP_TOKEN ?? '',
+    campusAuth,
   });
-  const port = Number(process.env.PORT ?? 8000);
   server.listen(port, onRailway ? '0.0.0.0' : '127.0.0.1', () => console.log(`StudyMate is listening on ${port}`));
 }

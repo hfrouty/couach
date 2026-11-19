@@ -82,6 +82,13 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
       expires_at INTEGER NOT NULL
     ) STRICT;
     CREATE INDEX IF NOT EXISTS account_sessions_expiry ON account_sessions(expires_at);
+
+    CREATE TABLE IF NOT EXISTS campus_identities (
+      subject TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL UNIQUE REFERENCES accounts(id) ON DELETE CASCADE,
+      campus_id TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE
+    ) STRICT;
   `);
 
   const insertAccount = db.prepare(`
@@ -95,6 +102,10 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
   const findUnchangedAccount = db.prepare(`SELECT ${publicFields} FROM accounts WHERE id = ? AND password_hash = ?`);
   const selectAccounts = db.prepare(`SELECT ${publicFields} FROM accounts ORDER BY created_at DESC, id DESC`);
   const findAdmin = db.prepare("SELECT id FROM accounts WHERE role = 'admin'");
+  const campusByAccount = db.prepare('SELECT subject, campus_id AS campusId, email AS campusEmail FROM campus_identities WHERE account_id = ?');
+  const campusBySubject = db.prepare('SELECT account_id AS accountId, campus_id AS campusId FROM campus_identities WHERE subject = ?');
+  const campusByEmail = db.prepare('SELECT account_id FROM campus_identities WHERE email = ?');
+  const insertCampus = db.prepare('INSERT INTO campus_identities (subject, account_id, campus_id, email) VALUES (?, ?, ?, ?)');
   const saveProfile = db.prepare(`
     UPDATE accounts SET name = ?, department = ?, region = ?, subject = ?, style = ? WHERE id = ?
     RETURNING ${publicFields}
@@ -131,6 +142,12 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
     return Boolean(findAdmin.get());
   }
 
+  function withCampus(account) {
+    if (!account) return null;
+    const identity = campusByAccount.get(account.id);
+    return { ...account, campusId: identity?.campusId ?? null, campusEmail: identity?.campusEmail ?? null };
+  }
+
   function grantSession(accountId) {
     const now = Date.now();
     const token = randomBytes(32).toString('base64url');
@@ -140,7 +157,9 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
   }
 
   function sendCookie(res, token, maxAge = sessionLifetime) {
-    res.setHeader('Set-Cookie', `${cookieName}=${token}; Max-Age=${maxAge}; ${cookieAttributes}`);
+    const cookie = `${cookieName}=${token}; Max-Age=${maxAge}; ${cookieAttributes}`;
+    const previous = res.getHeader?.('Set-Cookie');
+    res.setHeader('Set-Cookie', previous ? [].concat(previous, cookie) : cookie);
   }
 
   function readSessionHash(req) {
@@ -156,7 +175,7 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
   function current(req) {
     const hash = readSessionHash(req);
     const session = hash ? findActiveSession.get(hash, Date.now()) : null;
-    return session ? (findAccount.get(session.account_id) ?? null) : null;
+    return session ? withCampus(findAccount.get(session.account_id)) : null;
   }
 
   async function createAccount(data, res, role) {
@@ -173,14 +192,14 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
       return { account: created, token: grantSession(created.id) };
     });
     sendCookie(res, token);
-    return account;
+    return withCampus(account);
   }
 
   function register(data, res) {
     return createAccount(data, res, 'student');
   }
 
-  async function login(data, res) {
+  async function login(data, res, requireCampusLogin = false) {
     const email = normalizeEmail(data?.email);
     if (!email || !validPassword(data?.password)) fail(401, '電子信箱或密碼不正確。');
     const credentials = findCredentials.get(email);
@@ -189,9 +208,48 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
     if (!matches || !credentials) fail(401, '電子信箱或密碼不正確。');
 
     const { account, token } = transaction(() => {
-      const activeAccount = findUnchangedAccount.get(credentials.id, credentials.password_hash);
+      const activeAccount = withCampus(findUnchangedAccount.get(credentials.id, credentials.password_hash));
       if (!activeAccount) fail(401, '電子信箱或密碼不正確。');
+      if (requireCampusLogin && activeAccount.role === 'student' && activeAccount.campusId) {
+        fail(403, '此帳號已連結學校，請使用校園帳號登入。');
+      }
       return { account: activeAccount, token: grantSession(activeAccount.id) };
+    });
+    sendCookie(res, token);
+    return account;
+  }
+
+  function campusSignIn({ intent, accountId, identity }, res) {
+    const { subject, campusId, email } = identity;
+    const { account, token } = transaction(() => {
+      const linked = campusBySubject.get(subject);
+      if (linked && linked.campusId !== campusId) fail(403, '無法確認校園身分。');
+
+      let member;
+      if (intent === 'link') {
+        member = findAccount.get(accountId);
+        if (member?.role !== 'student') fail(403, '請先登入原本的學生帳號。');
+        const currentIdentity = campusByAccount.get(accountId);
+        if ((linked && linked.accountId !== accountId) || (currentIdentity && currentIdentity.subject !== subject)) {
+          fail(409, '此校園身分已連結，請使用原本連結的帳號。');
+        }
+      } else if (linked) {
+        member = findAccount.get(linked.accountId);
+      } else {
+        const { name, department, region, subject: preferredSubject, style } = validatedProfile({ name: '暨大同學' });
+        member = insertAccount.get(randomUUID(), email, name, department, region, preferredSubject, style, 'student', randomBytes(16), randomBytes(keySize), new Date().toISOString());
+        if (!member) fail(409, '此信箱已有 StudyMate 帳號，請先登入舊帳號完成連結。');
+      }
+
+      if (member?.role !== 'student') fail(403, '無法使用此校園身分登入。');
+      if (!linked) {
+        if (campusByEmail.get(email)) fail(409, '此校園信箱已連結其他帳號。');
+        const emailAccount = findCredentials.get(email);
+        if (emailAccount && emailAccount.id !== member.id) fail(409, '此校園信箱已對應另一個 StudyMate 帳號。');
+        insertCampus.run(subject, member.id, campusId, email);
+      }
+      if (intent === 'link') deleteAccountSessions.run(member.id);
+      return { account: withCampus(member), token: grantSession(member.id) };
     });
     sendCookie(res, token);
     return account;
@@ -235,12 +293,12 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
   function updateProfile(account, data) {
     if (!data || typeof data !== 'object' || Array.isArray(data)) fail(400, '請輸入有效的讀書偏好。');
     const { name, department, region, subject, style } = validatedProfile(data, account);
-    return saveProfile.get(name, department, region, subject, style, account.id);
+    return withCampus(saveProfile.get(name, department, region, subject, style, account.id));
   }
 
   function listAccounts() {
     return selectAccounts.all();
   }
 
-  return { register, login, changeAdminPassword, logout, current, setup, updateProfile, listAccounts, adminConfigured };
+  return { register, login, campusSignIn, changeAdminPassword, logout, current, setup, updateProfile, listAccounts, adminConfigured };
 }

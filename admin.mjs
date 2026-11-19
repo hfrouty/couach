@@ -4,6 +4,12 @@ const page = document.querySelector('#admin');
 const dates = new Intl.DateTimeFormat('zh-TW', {
   timeZone: 'Asia/Taipei', year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
 });
+const updateDates = new Intl.DateTimeFormat('zh-TW', {
+  timeZone: 'Asia/Taipei', year: 'numeric', month: 'numeric', day: 'numeric',
+  hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+});
+
+const accountTableSize = new ResizeObserver(updateAccountTableHint);
 
 function escape(value) {
   return String(value ?? '').replace(/[&<>"']/g, character => (
@@ -27,11 +33,13 @@ function showError(message, scope = page) {
     alert.hidden = false;
     alert.textContent = message;
   } else {
+    accountTableSize.disconnect();
     page.innerHTML = `<div class="admin-notice"><h1>管理後台</h1><p role="alert">${escape(message)}</p><button class="button button-secondary" data-refresh>重試</button></div>`;
   }
 }
 
 function renderSignIn(setup, account, notice = '') {
+  accountTableSize.disconnect();
   const heading = setup ? '建立管理員帳號' : '管理員登入';
   page.innerHTML = `
     <section class="admin-auth-panel tool-panel">
@@ -52,42 +60,19 @@ function renderSignIn(setup, account, notice = '') {
 }
 
 function renderDashboard(account, { accounts, reports, counts }) {
+  accountTableSize.disconnect();
   page.innerHTML = `
     <header class="admin-heading">
       <div><h1>管理後台</h1><p>${escape(account.name)} · 管理員</p></div>
       <div class="admin-actions">
-        <button type="button" class="button button-secondary" data-refresh>${icon('rotate')} 更新資料</button>
+        <button type="button" class="button button-secondary" data-update-overview>${icon('rotate')} <span>更新資料</span></button>
         <button type="button" class="button button-secondary" data-open-password aria-haspopup="dialog" aria-controls="admin-password-dialog">變更密碼</button>
         <button type="button" class="button button-primary" data-logout>登出</button>
       </div>
     </header>
+    <p class="admin-update-status" role="status" aria-atomic="true" data-update-status></p>
     <p class="admin-error" role="alert" hidden></p>
-    <div class="admin-summary">
-      ${[['讀書邀約', counts.sessions], ['預約申請', counts.reservations], ['待處理檢舉', counts.reports]].map(([label, number]) => `
-        <div class="tool-panel admin-metric"><span>${label}</span><strong>${Number(number) || 0}</strong></div>
-      `).join('')}
-    </div>
-    <section class="tool-panel admin-panel" aria-labelledby="reports-title">
-      <h2 id="reports-title">${icon('flag')} 檢舉紀錄</h2>
-      ${reports.length ? `<div class="admin-table-wrap"><table>
-        <thead><tr><th scope="col">邀約</th><th scope="col">檢舉人</th><th scope="col">原因</th><th scope="col">時間</th><th scope="col">處理狀態</th></tr></thead>
-        <tbody>${reports.map(report => `
-          <tr><td>${escape(report.title)}</td><td>${escape(report.reporter)}</td><td>${escape(report.reason)}</td>
-            <td><time datetime="${escape(report.createdAt)}">${dateOf(report.createdAt)}</time></td>
-            <td>${report.status === 'open' ? `<button type="button" class="button button-secondary" data-resolve="${escape(report.id)}">標記已處理</button>` : '<span class="status-pill status-live">已處理</span>'}</td></tr>
-        `).join('')}</tbody>
-      </table></div>` : '<p class="admin-empty">目前沒有檢舉。</p>'}
-    </section>
-    <section class="tool-panel admin-panel" aria-labelledby="accounts-title">
-      <h2 id="accounts-title">${icon('users')} 帳號清單</h2>
-      <div class="admin-table-wrap"><table>
-        <thead><tr><th scope="col">暱稱</th><th scope="col">電子郵件</th><th scope="col">角色</th><th scope="col">註冊時間</th></tr></thead>
-        <tbody>${accounts.map(member => `
-          <tr><td>${escape(member.name)}</td><td>${escape(member.email)}</td>
-            <td>${member.role === 'admin' ? '管理員' : '學生'}</td><td>${dateOf(member.createdAt)}</td></tr>
-        `).join('')}</tbody>
-      </table></div>
-    </section>
+    <div data-overview></div>
     <dialog id="admin-password-dialog" aria-labelledby="admin-password-title" aria-describedby="admin-password-description">
       <header class="dialog-header">
         <div>
@@ -110,6 +95,86 @@ function renderDashboard(account, { accounts, reports, counts }) {
         </div>
       </form>
     </dialog>`;
+  renderOverview({ accounts, reports, counts });
+  showUpdateStatus(new Date());
+}
+
+function renderOverview({ accounts, reports, counts }) {
+  accountTableSize.disconnect();
+  const viewport = page.querySelector('[data-overview]');
+  const previousScrollLeft = viewport.querySelector('[data-account-table]')?.scrollLeft ?? 0;
+  viewport.innerHTML = `
+    <div class="admin-summary">
+      ${[['讀書邀約', counts.sessions], ['預約申請', counts.reservations], ['待處理檢舉', counts.reports]].map(([label, number]) => `
+        <div class="tool-panel admin-metric"><span>${label}</span><strong>${Number(number) || 0}</strong></div>
+      `).join('')}
+    </div>
+    <section class="tool-panel admin-panel" aria-labelledby="reports-title">
+      <h2 id="reports-title">${icon('flag')} 檢舉紀錄</h2>
+      ${reports.length ? `<div class="admin-table-wrap"><table>
+        <thead><tr><th scope="col">邀約</th><th scope="col">檢舉人</th><th scope="col">原因</th><th scope="col">時間</th><th scope="col">處理狀態</th></tr></thead>
+        <tbody>${reports.map(report => `
+          <tr><td>${escape(report.title)}</td><td>${escape(report.reporter)}</td><td>${escape(report.reason)}</td>
+            <td><time datetime="${escape(report.createdAt)}">${dateOf(report.createdAt)}</time></td>
+            <td>${report.status === 'open' ? `<button type="button" class="button button-secondary" data-resolve="${escape(report.id)}">標記已處理</button>` : '<span class="status-pill status-live">已處理</span>'}</td></tr>
+        `).join('')}</tbody>
+      </table></div>` : '<p class="admin-empty">目前沒有檢舉。</p>'}
+    </section>
+    <section class="tool-panel admin-panel" aria-labelledby="accounts-title">
+      <h2 id="accounts-title">${icon('users')} 帳號清單</h2>
+      <p class="admin-scroll-hint" id="admin-account-scroll-hint" hidden>左右滑動可查看角色與註冊時間</p>
+      <div class="admin-table-wrap" role="region" aria-labelledby="accounts-title" data-account-table><table>
+        <thead><tr><th scope="col">暱稱</th><th scope="col">電子郵件</th><th scope="col">角色</th><th scope="col">註冊時間</th></tr></thead>
+        <tbody>${accounts.map(member => `
+          <tr><td>${escape(member.name)}</td><td>${escape(member.email)}</td>
+            <td>${member.role === 'admin' ? '管理員' : '學生'}</td><td>${dateOf(member.createdAt)}</td></tr>
+        `).join('')}</tbody>
+      </table></div>
+    </section>`;
+  const accountTable = viewport.querySelector('[data-account-table]');
+  accountTable.scrollLeft = previousScrollLeft;
+  updateAccountTableHint();
+  accountTableSize.observe(accountTable);
+  accountTableSize.observe(accountTable.querySelector('table'));
+}
+
+function updateAccountTableHint() {
+  const viewport = page.querySelector('[data-account-table]');
+  if (!viewport) return;
+  const hint = page.querySelector('#admin-account-scroll-hint');
+  const overflow = viewport.scrollWidth > viewport.clientWidth;
+  hint.hidden = !overflow;
+  viewport.tabIndex = overflow ? 0 : -1;
+  if (overflow) viewport.setAttribute('aria-describedby', hint.id);
+  else viewport.removeAttribute('aria-describedby');
+}
+
+function showUpdateStatus(lastUpdated, message = '', failed = false) {
+  const status = page.querySelector('[data-update-status]');
+  status.classList.toggle('admin-update-failure', failed);
+  status.innerHTML = `
+    ${message ? `<strong>${escape(message)}</strong>` : ''}
+    <span>最後成功更新（台灣時間） <time datetime="${lastUpdated.toISOString()}">${updateDates.format(lastUpdated)}</time></span>`;
+}
+
+async function updateOverview(control) {
+  if (control.getAttribute('aria-disabled') === 'true') return;
+  const label = control.querySelector('span');
+  const lastUpdated = new Date(page.querySelector('[data-update-status] time').dateTime);
+  control.setAttribute('aria-disabled', 'true');
+  label.textContent = '更新中…';
+  showUpdateStatus(lastUpdated, '更新中…');
+  try {
+    const overview = await api('/api/admin/overview');
+    if (!control.isConnected) return;
+    renderOverview(overview);
+    showUpdateStatus(new Date(), '已更新');
+  } catch {
+    if (control.isConnected) showUpdateStatus(lastUpdated, '更新失敗，請再按「更新資料」重試。', true);
+  } finally {
+    label.textContent = '更新資料';
+    control.removeAttribute('aria-disabled');
+  }
 }
 
 function dateOf(value) {
@@ -188,6 +253,7 @@ page.addEventListener('click', event => {
   const control = event.target.closest('button');
   if (!control) return;
   if ('refresh' in control.dataset) perform(control, async () => {});
+  if ('updateOverview' in control.dataset) void updateOverview(control);
   if ('logout' in control.dataset) perform(control, () => api('/api/auth/logout', {}));
   if ('openPassword' in control.dataset) page.querySelector('#admin-password-dialog').showModal();
   if ('closePassword' in control.dataset) control.closest('dialog').close();

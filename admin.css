@@ -30,13 +30,18 @@
 .admin-heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 .admin-heading h1 { margin-top: 0; }
 .admin-actions { display: flex; gap: .45rem; flex-wrap: wrap; }
+.admin-update-status { margin: .75rem 0 0; display: flex; flex-wrap: wrap; gap: .2rem .65rem; color: var(--muted); font-size: .86rem; }
+.admin-update-status strong { color: var(--moss); }
+.admin-update-failure strong { color: #831f22; }
+.admin-actions [aria-disabled="true"] { opacity: .62; cursor: wait; }
 .admin-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; margin: 1.15rem 0; }
 .admin-metric { padding: .85rem 1rem; }
 .admin-metric span { display: block; color: var(--muted); font-weight: 650; }
 .admin-metric strong { display: block; font-size: 1.85rem; }
 .admin-panel { margin: 1rem 0; padding: clamp(.9rem, 3vw, 1.5rem); }
 .admin-panel h2 { display: flex; gap: .45rem; align-items: center; margin: 0 0 .8rem; }
-.admin-table-wrap { overflow-x: auto; }
+.admin-table-wrap { max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }
+.admin-scroll-hint { margin: -.3rem 0 .55rem; color: var(--muted); font-size: .86rem; }
 .admin-panel table { width: 100%; border-collapse: collapse; text-align: left; font-size: .9rem; }
 .admin-panel th, .admin-panel td { padding: .66rem .53rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .admin-panel th { color: var(--muted); background: #f4f6ef; }

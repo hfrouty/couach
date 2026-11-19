@@ -2,6 +2,7 @@ import { icon } from './icons.mjs';
 import { isLive, scoreSession } from './matching.mjs';
 import { SCHOOL, REGIONS, SUBJECTS, STYLES, DEPARTMENTS, PLACES } from './sample-data.mjs';
 import { createStudyTools } from './study-tools.mjs';
+import { bindCampusMap, DEFAULT_MAP_CAMPUS, renderCampusMap, updateCampusMapSelection } from './campus-map.mjs';
 
 const app = document.querySelector('#app');
 const dialog = document.querySelector('#dialog');
@@ -19,6 +20,8 @@ let cleanup = () => {};
 let toastTimeout;
 let view = activeView();
 let authMode = 'login';
+let campusLogin = false;
+let legacyLogin = false;
 let loading = true;
 let loadError = '';
 let adminSetup = false;
@@ -31,6 +34,22 @@ const navigation = [
   ['focus', 'timer', '專注計時'],
   ['places', 'pin', '讀書空間'],
 ];
+const campusMaps = new Map([['ncnu', DEFAULT_MAP_CAMPUS]]);
+let campusNotice = '';
+const entryUrl = new URL(window.location.href);
+const campusNotices = new Map([
+  ['school', '請選擇暨大學生的 Google 校園帳號。'],
+  ['link', '這個信箱可能已有 StudyMate 帳號，請先用舊帳密登入，再連結校園帳號。'],
+  ['account', '校園帳號未能連結，請確認目前登入的 StudyMate 帳號後重試。'],
+  ['failed', '校園帳號登入未完成，請重新開始。'],
+  ['busy', '校園登入目前較忙，請稍後再試。'],
+  ['unavailable', '校園登入目前未開放，請稍後再試。'],
+]);
+if (entryUrl.searchParams.has('campus')) {
+  campusNotice = campusNotices.get(entryUrl.searchParams.get('campus')) ?? '';
+  entryUrl.searchParams.delete('campus');
+  history.replaceState(history.state, '', entryUrl);
+}
 
 function emptyState() {
   return { account: null, sessions: [], reservations: {}, incoming: [], focusLog: [], pendingFocus: [] };
@@ -100,8 +119,17 @@ function bindAccount(account) {
 function resetAccount() {
   state = emptyState();
   authMode = 'login';
+  legacyLogin = false;
   studyVersion++;
   loadError = '';
+}
+
+function needsCampusLink() {
+  return Boolean(campusLogin && state.account?.role === 'student' && !state.account.campusId);
+}
+
+function signedInCampus() {
+  return campusMaps.get(state.account?.campusId) ?? DEFAULT_MAP_CAMPUS;
 }
 
 function mergeStudy(study) {
@@ -231,7 +259,7 @@ function renderShell(content) {
           <img src="./assets/icon.svg" width="36" height="36" alt="">
           <strong>StudyMate<span>.</span></strong>
         </a>
-        <span class="campus-label">${icon('pin')} ${SCHOOL}</span>
+        <span class="campus-label">${icon('pin')} ${escape(signedInCampus().name)}</span>
         <div class="top-actions">
           ${state.account.role === 'admin' ? '<a class="button button-text admin-link" href="/admin">管理後台</a>' : ''}
           <button type="button" class="profile-trigger" data-action="profile" aria-label="我的帳號">${avatar(Array.from(state.account.name)[0])}<span>${escape(state.account.name)}</span>${icon('chevron')}</button>
@@ -244,7 +272,7 @@ function renderShell(content) {
 function render() {
   cleanup();
   cleanup = () => {};
-  if (loading || !state.account) {
+  if (loading || !state.account || needsCampusLink()) {
     app.innerHTML = renderAuth();
     return;
   }
@@ -254,7 +282,36 @@ function render() {
   }
   const content = view === 'explore' ? renderExplore() : view === 'plans' ? renderPlans() : studyTools.render(view);
   app.innerHTML = renderShell(content);
-  cleanup = studyTools.bind(app.querySelector('main'), view);
+  cleanup = view === 'explore' ? bindCampusMap(app) : studyTools.bind(app.querySelector('main'), view);
+}
+
+function passwordEntry(register, label) {
+  return `<form class="dialog-form account-form" data-auth="${register ? 'register' : 'login'}">
+    ${register ? '<label class="field"><span>暱稱</span><input name="name" autocomplete="nickname" maxlength="40" placeholder="共讀時顯示的名字" required></label>' : ''}
+    <label class="field"><span>電子郵件</span><input type="email" autocomplete="username" name="email" maxlength="254" placeholder="you@example.com" required></label>
+    <label class="field"><span>密碼</span><input type="password" name="password" autocomplete="${register ? 'new-password' : 'current-password'}" ${register ? 'minlength="8" placeholder="至少 8 個字元"' : ''} maxlength="128" required></label>
+    <p class="account-error" data-request-error role="alert" hidden></p>
+    <button class="button button-primary account-submit" type="submit">${label}</button>
+  </form>`;
+}
+
+function campusEntry() {
+  const notice = campusNotice ? `<p class="account-error campus-entry-notice" role="alert">${escape(campusNotice)}</p>` : '';
+  if (needsCampusLink()) {
+    const account = state.account;
+    return `<h2>連結學校帳號</h2>
+      <p class="account-description">連結後會開啟暨大周邊地圖，原本的邀約與預約會留在此帳號。</p>
+      <p class="account-email campus-linked-account">${escape(account.email)}</p>
+      ${notice}
+      <a class="button button-primary account-submit" href="/api/auth/campus/start?intent=link&amp;account=${encodeURIComponent(account.id)}">${icon('shield')} 連結暨大 Google 帳號</a>
+      <div class="account-switch">${button('登出', 'logout', { variant: 'text' })}</div>`;
+  }
+  return `<h2>使用學校帳號登入</h2>
+    <p class="account-description">使用暨大學生 Google 帳號，登入後直接開啟校園周邊地圖。</p>
+    ${notice}
+    <a class="button button-primary account-submit" href="/api/auth/campus/start">${icon('shield')} 使用暨大 Google 帳號登入</a>
+    <div class="account-switch">${button(legacyLogin ? '收起舊帳號表單' : '連結舊 StudyMate 帳號', 'legacy-auth', { variant: 'text' })}</div>
+    ${legacyLogin ? passwordEntry(false, '登入並連結校園帳號') : ''}`;
 }
 
 function renderAuth() {
@@ -279,16 +336,12 @@ function renderAuth() {
             ${button('重新連線', 'retry-bootstrap', { variant: 'primary' })}
           </div>` : `
           <div class="account-card">
+            ${campusLogin ? campusEntry() : `
             <h2>${register ? '建立共讀帳號' : '歡迎回來'}</h2>
             <p class="account-description">${register ? '建立帳號後，就可以發起或加入共讀。' : '使用電子郵件登入 StudyMate。'}</p>
-            <form class="dialog-form account-form" data-auth="${register ? 'register' : 'login'}">
-              ${register ? '<label class="field"><span>暱稱</span><input name="name" autocomplete="nickname" maxlength="40" placeholder="共讀時顯示的名字" required></label>' : ''}
-              <label class="field"><span>電子郵件</span><input type="email" autocomplete="username" name="email" maxlength="254" placeholder="you@example.com" required></label>
-              <label class="field"><span>密碼</span><input type="password" name="password" autocomplete="${register ? 'new-password' : 'current-password'}" ${register ? 'minlength="8" placeholder="至少 8 個字元"' : ''} maxlength="128" required></label>
-              <p class="account-error" data-request-error role="alert" hidden></p>
-              <button class="button button-primary account-submit" type="submit">${register ? '註冊並登入' : '登入'}</button>
-            </form>
-            <div class="account-switch"><span>${register ? '已經有帳號？' : '第一次使用？'}</span>${button(register ? '我要登入' : '建立帳號', 'auth-mode', { variant: 'text' })}</div>
+            ${campusNotice ? `<p class="account-error campus-entry-notice" role="alert">${escape(campusNotice)}</p>` : ''}
+            ${passwordEntry(register, register ? '註冊並登入' : '登入')}
+            <div class="account-switch"><span>${register ? '已經有帳號？' : '第一次使用？'}</span>${button(register ? '我要登入' : '建立帳號', 'auth-mode', { variant: 'text' })}</div>`}
             <a class="account-setup-link" href="/admin">${adminSetup ? '管理員初始設定' : '管理員登入'}</a>
           </div>`}
       </section>
@@ -300,17 +353,11 @@ function renderExplore() {
   const pending = Object.values(state.reservations).filter(item => item.status === 'pending' && !hasEnded(item.session)).length;
   const upcoming = Object.values(state.reservations).filter(item => item.status === 'confirmed' && !hasEnded(item.session)).length;
   return `
-    <section class="hero" aria-labelledby="hero-title">
-      <div class="hero-content">
-        <p class="hero-campus">${icon('book')} 暨大校園共讀</p>
-        <h1 id="hero-title">找個夥伴，<br><em>一起把書讀完。</em></h1>
-        <p class="hero-description">從圖書館到線上自習室，找到和你同一個節奏的人。</p>
-        <div class="hero-actions">
-          ${button('即時找夥伴', 'find-now', { glyph: 'bolt', variant: 'lime' })}
-          ${button('發起邀約', 'publish', { glyph: 'plus', variant: 'glass' })}
-        </div>
-      </div>
-    </section>
+    ${renderCampusMap({
+      campus: signedInCampus(), selectedRegion: filters.region, invitations: state.sessions,
+      actions: button('即時找夥伴', 'find-now', { glyph: 'bolt', variant: 'secondary' })
+        + button('發起邀約', 'publish', { glyph: 'plus', variant: 'primary' }),
+    })}
     <div class="dashboard-grid">
       <section class="discovery" aria-labelledby="discovery-title">
         <header class="section-heading heading-with-action" id="discovery-heading">
@@ -324,7 +371,7 @@ function renderExplore() {
           </div>
           ${button('篩選', 'filters', { glyph: 'sliders' })}
         </div>
-        <div class="results-line"><span id="result-count" aria-live="polite">${results.length} 個邀約</span><label class="sort-control"><span class="sr-only">排序</span><select id="sort">${selectOptions([['score', '媒合度優先'], ['distance', '區域距離優先'], ['time', '時間優先']], filters.sort)}</select>${icon('chevron')}</label></div>
+        <div class="results-line"><span id="result-count" aria-live="polite">${escape(resultCount(results))}</span><label class="sort-control"><span class="sr-only">排序</span><select id="sort">${selectOptions([['score', '媒合度優先'], ['distance', '區域距離優先'], ['time', '時間優先']], filters.sort)}</select>${icon('chevron')}</label></div>
         <div id="results" class="session-grid">${renderResults(results)}</div>
       </section>
       <aside class="dashboard-aside" aria-label="讀書小工具">
@@ -380,12 +427,17 @@ function renderResults(results) {
     </div>`;
 }
 
+function resultCount(results) {
+  return `${filters.region ? `${filters.region} · ` : ''}${results.length} 個邀約`;
+}
+
 function refreshResults() {
   const container = document.querySelector('#results');
   if (!container) return;
   const results = matchingSessions();
   container.innerHTML = renderResults(results);
-  document.querySelector('#result-count').textContent = `${results.length} 個邀約`;
+  document.querySelector('#result-count').textContent = resultCount(results);
+  updateCampusMapSelection(app, filters.region);
   for (const control of app.querySelectorAll('[data-action="timing"]')) {
     control.setAttribute('aria-pressed', String(control.dataset.value === filters.timing));
   }
@@ -501,6 +553,7 @@ function showProfile() {
     <form data-form="profile" class="dialog-form">
       <label class="field"><span>暱稱</span><input name="name" maxlength="40" autocomplete="nickname" value="${escape(p.name)}" required></label>
       <div class="field"><span>電子郵件</span><p class="field-value account-email">${escape(p.email)}</p></div>
+      ${p.campusEmail ? `<div class="field"><span>已連結的校園帳號</span><p class="field-value account-email">${escape(p.campusEmail)}</p></div>` : ''}
       <div class="field-grid">
         ${selectField('department', '科系', DEPARTMENTS, p.department)}
         ${selectField('region', '所在區域', REGIONS, p.region)}
@@ -656,7 +709,7 @@ async function runRequest(control, execute, errorNode) {
 
 async function updateViewData() {
   const currentView = view;
-  if (!state.account || !['plans', 'explore'].includes(view)) return;
+  if (!state.account || needsCampusLink() || !['plans', 'explore'].includes(view)) return;
   try {
     if (!await refreshStudy() || currentView !== view || dialog.open || activeRequest) return;
     const mainFocused = document.activeElement === app.querySelector('main');
@@ -673,12 +726,19 @@ async function bootstrap() {
   loadError = '';
   render();
   try {
-    const { account, adminSetup: canSetup } = await api('/account');
+    const { account, adminSetup: canSetup, campusLogin: canUseCampus } = await api('/account');
     adminSetup = canSetup;
+    campusLogin = canUseCampus;
     if (account) {
       bindAccount(account);
-      await refreshStudy();
-      syncFocus();
+      if (!needsCampusLink()) {
+        await refreshStudy();
+        syncFocus();
+        if (campusNotice) {
+          toast(campusNotice);
+          campusNotice = '';
+        }
+      }
     }
   } catch (error) {
     loadError = error.message;
@@ -714,6 +774,12 @@ document.addEventListener('click', event => {
       render();
       app.querySelector('.account-form input').focus();
       break;
+    case 'legacy-auth':
+      legacyLogin = !legacyLogin;
+      render();
+      if (legacyLogin) app.querySelector('.account-form input').focus();
+      else app.querySelector('[data-action="legacy-auth"]').focus();
+      break;
     case 'retry-bootstrap':
       void bootstrap();
       break;
@@ -721,6 +787,7 @@ document.addEventListener('click', event => {
       void runRequest(control, async () => {
         await api('/auth/logout', { method: 'POST' });
         resetAccount();
+        campusNotice = '';
         dialog.close();
         render();
       }, dialog.querySelector('[data-request-error]'));
@@ -742,6 +809,11 @@ document.addEventListener('click', event => {
       break;
     case 'timing':
       filters.timing = value;
+      refreshResults();
+      break;
+    case 'map-region':
+      filters.region = filters.region === value ? '' : value;
+      if (filters.region && filters.mode === 'online') filters.mode = '';
       refreshResults();
       break;
     case 'reset-filters':
@@ -808,9 +880,12 @@ app.addEventListener('submit', event => {
   void runRequest(event.submitter, async () => {
     const { account } = await api(`/auth/${action}`, { method: 'POST', data: credentials });
     bindAccount(account);
+    campusNotice = '';
     try {
-      await refreshStudy();
-      syncFocus();
+      if (!needsCampusLink()) {
+        await refreshStudy();
+        syncFocus();
+      }
     } catch (error) {
       loadError = error.message;
     }

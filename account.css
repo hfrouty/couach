@@ -124,6 +124,13 @@
   font-size: .9rem;
 }
 
+.campus-entry-notice { margin-bottom: .85rem; }
+.campus-linked-account {
+  margin-bottom: .85rem;
+  color: var(--moss);
+  font-weight: 650;
+}
+
 .account-email { overflow-wrap: anywhere; }
 .admin-link { white-space: nowrap; }
 .incoming-name { margin: 0 0 .55rem; color: var(--muted); font-size: .94rem; }
