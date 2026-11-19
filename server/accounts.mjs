@@ -35,6 +35,11 @@ function validPassword(value, minimum = 8) {
   return length >= minimum && length <= 128;
 }
 
+async function hashPassword(password) {
+  const salt = randomBytes(16);
+  return { salt, hash: await deriveKey(password, salt, keySize, passwordCost) };
+}
+
 function validatedProfile(data, current = {}) {
   const name = data?.name === undefined ? current.name : data.name;
   if (typeof name !== 'string' || !name.isWellFormed() || !name.trim() || [...name.trim()].length > 40 || /\p{Cc}/u.test(name)) {
@@ -87,15 +92,21 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
   `);
   const findCredentials = db.prepare('SELECT id, password_salt, password_hash FROM accounts WHERE email = ?');
   const findAccount = db.prepare(`SELECT ${publicFields} FROM accounts WHERE id = ?`);
+  const findUnchangedAccount = db.prepare(`SELECT ${publicFields} FROM accounts WHERE id = ? AND password_hash = ?`);
   const selectAccounts = db.prepare(`SELECT ${publicFields} FROM accounts ORDER BY created_at DESC, id DESC`);
   const findAdmin = db.prepare("SELECT id FROM accounts WHERE role = 'admin'");
   const saveProfile = db.prepare(`
     UPDATE accounts SET name = ?, department = ?, region = ?, subject = ?, style = ? WHERE id = ?
     RETURNING ${publicFields}
   `);
+  const saveAdminPassword = db.prepare(`
+    UPDATE accounts SET password_salt = ?, password_hash = ?
+    WHERE id = ? AND role = 'admin' AND password_hash = ?
+  `);
   const insertSession = db.prepare('INSERT INTO account_sessions(token_hash, account_id, expires_at) VALUES (?, ?, ?)');
   const findActiveSession = db.prepare('SELECT account_id FROM account_sessions WHERE token_hash = ? AND expires_at > ?');
   const deleteSession = db.prepare('DELETE FROM account_sessions WHERE token_hash = ?');
+  const deleteAccountSessions = db.prepare('DELETE FROM account_sessions WHERE account_id = ?');
   const expireSessions = db.prepare('DELETE FROM account_sessions WHERE expires_at <= ?');
 
   function transaction(action) {
@@ -108,6 +119,12 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
       db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  function replaceAdminPassword(accountId, previousHash, salt, hash) {
+    const updated = saveAdminPassword.run(salt, hash, accountId, previousHash);
+    if (updated.changes !== 1) fail(409, '密碼已變更，請重新登入後再試。');
+    deleteAccountSessions.run(accountId);
   }
 
   function adminConfigured() {
@@ -148,8 +165,7 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
     if (!email) fail(400, '請輸入有效的電子信箱。');
     if (!validPassword(data.password, minimum)) fail(400, `密碼須為 ${minimum} 至 128 個字元。`);
     const { name, department, region, subject, style } = validatedProfile(data);
-    const salt = randomBytes(16);
-    const hash = await deriveKey(data.password, salt, keySize, passwordCost);
+    const { salt, hash } = await hashPassword(data.password);
     const { account, token } = transaction(() => {
       if (role === 'admin' && adminConfigured()) fail(409, '管理員帳號已建立。');
       const created = insertAccount.get(randomUUID(), email, name, department, region, subject, style, role, salt, hash, new Date().toISOString());
@@ -172,11 +188,31 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
     const matches = timingSafeEqual(actual, credentials?.password_hash ?? dummyKey);
     if (!matches || !credentials) fail(401, '電子信箱或密碼不正確。');
 
-    const account = findAccount.get(credentials.id);
-    if (!account) fail(401, '電子信箱或密碼不正確。');
-    const token = transaction(() => grantSession(account.id));
+    const { account, token } = transaction(() => {
+      const activeAccount = findUnchangedAccount.get(credentials.id, credentials.password_hash);
+      if (!activeAccount) fail(401, '電子信箱或密碼不正確。');
+      return { account: activeAccount, token: grantSession(activeAccount.id) };
+    });
     sendCookie(res, token);
     return account;
+  }
+
+  async function changeAdminPassword(account, data, res) {
+    if (account?.role !== 'admin') fail(403, '僅管理員可更改後台密碼。');
+    const { currentPassword, newPassword } = data ?? {};
+    if (!validPassword(currentPassword)) fail(400, '目前的密碼不正確。');
+    if (!validPassword(newPassword, 12)) fail(400, '新密碼須為 12 至 128 個字元。');
+    if (newPassword === currentPassword) fail(400, '請使用與目前不同的新密碼。');
+
+    const credentials = findCredentials.get(account.email);
+    if (credentials?.id !== account.id) fail(403, '僅管理員可更改後台密碼。');
+    const actual = await deriveKey(currentPassword, credentials.password_salt, keySize, passwordCost);
+    if (!timingSafeEqual(actual, credentials.password_hash)) fail(400, '目前的密碼不正確。');
+
+    const { salt, hash } = await hashPassword(newPassword);
+    transaction(() => replaceAdminPassword(account.id, credentials.password_hash, salt, hash));
+    sendCookie(res, '', 0);
+    return { ok: true };
   }
 
   function logout(req, res) {
@@ -206,5 +242,5 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
     return selectAccounts.all();
   }
 
-  return { register, login, logout, current, setup, updateProfile, listAccounts, adminConfigured };
+  return { register, login, changeAdminPassword, logout, current, setup, updateProfile, listAccounts, adminConfigured };
 }

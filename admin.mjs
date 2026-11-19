@@ -16,13 +16,13 @@ async function api(path, body) {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   };
   const response = await fetch(path, options);
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || '目前無法完成操作。');
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data) throw new Error(data?.error || '目前無法完成操作。');
   return data;
 }
 
-function showError(message) {
-  const alert = page.querySelector('[role="alert"]');
+function showError(message, scope = page) {
+  const alert = scope.querySelector('[role="alert"]');
   if (alert) {
     alert.hidden = false;
     alert.textContent = message;
@@ -31,18 +31,19 @@ function showError(message) {
   }
 }
 
-function renderSignIn(setup, account) {
+function renderSignIn(setup, account, notice = '') {
   const heading = setup ? '建立管理員帳號' : '管理員登入';
   page.innerHTML = `
     <section class="admin-auth-panel tool-panel">
       <span class="tile-icon">${icon('shield')}</span>
-      <h1>${heading}</h1>
+      <h1${notice ? ' tabindex="-1" aria-describedby="admin-auth-notice"' : ''}>${heading}</h1>
       <p>${setup ? '使用部署時設定的一次性啟用碼，建立唯一的管理員帳號。' : '使用管理員的電子郵件和密碼登入後台。'}</p>
       ${account ? '<p class="admin-callout">目前使用學生帳號登入。登入管理員帳號後即可查看後台。</p>' : ''}
+      ${notice ? `<p id="admin-auth-notice" class="admin-success" role="status">${escape(notice)}</p>` : ''}
       <form class="dialog-form" data-auth="${setup ? 'setup' : 'login'}">
         ${setup ? '<label class="field"><span>啟用碼</span><input name="setupToken" type="password" required maxlength="256" autocomplete="off"></label><label class="field"><span>暱稱</span><input name="name" required maxlength="40" autocomplete="nickname"></label>' : ''}
         <label class="field"><span>電子郵件</span><input name="email" type="email" required maxlength="254" autocomplete="username"></label>
-        <label class="field"><span>密碼</span><input name="password" type="password" required ${setup ? 'minlength="12" autocomplete="new-password"' : 'autocomplete="current-password"'} maxlength="128"></label>
+        <label class="field"><span>密碼</span><input name="password" type="password" required ${setup ? 'minlength="12" autocomplete="new-password"' : 'autocomplete="current-password"'} maxlength="256"></label>
         ${setup ? '<small class="form-note">密碼至少 12 個字元。</small>' : ''}
         <p class="admin-error" role="alert" hidden></p>
         <button type="submit" class="button button-primary">${setup ? '建立管理員' : '登入後台'}</button>
@@ -56,6 +57,7 @@ function renderDashboard(account, { accounts, reports, counts }) {
       <div><h1>管理後台</h1><p>${escape(account.name)} · 管理員</p></div>
       <div class="admin-actions">
         <button type="button" class="button button-secondary" data-refresh>${icon('rotate')} 更新資料</button>
+        <button type="button" class="button button-secondary" data-open-password aria-haspopup="dialog" aria-controls="admin-password-dialog">變更密碼</button>
         <button type="button" class="button button-primary" data-logout>登出</button>
       </div>
     </header>
@@ -85,7 +87,29 @@ function renderDashboard(account, { accounts, reports, counts }) {
             <td>${member.role === 'admin' ? '管理員' : '學生'}</td><td>${dateOf(member.createdAt)}</td></tr>
         `).join('')}</tbody>
       </table></div>
-    </section>`;
+    </section>
+    <dialog id="admin-password-dialog" aria-labelledby="admin-password-title" aria-describedby="admin-password-description">
+      <header class="dialog-header">
+        <div>
+          <h2 id="admin-password-title">變更管理員密碼</h2>
+          <p id="admin-password-description">更新密碼後，所有管理員登入階段都會登出。</p>
+        </div>
+      </header>
+      <form class="dialog-form" method="post" data-password>
+        <label class="field"><span>目前密碼</span><input name="currentPassword" type="password" required maxlength="256" autocomplete="current-password" autofocus></label>
+        <label class="field">
+          <span>新密碼</span>
+          <input name="newPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password" aria-describedby="admin-password-length">
+          <small id="admin-password-length" class="form-note">請使用 12 到 128 個字元。</small>
+        </label>
+        <label class="field"><span>確認新密碼</span><input name="confirmPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
+        <p class="admin-error" role="alert" hidden></p>
+        <div class="admin-password-actions">
+          <button type="button" class="button button-secondary" data-close-password>取消</button>
+          <button type="submit" class="button button-primary">更新密碼</button>
+        </div>
+      </form>
+    </dialog>`;
 }
 
 function dateOf(value) {
@@ -117,10 +141,45 @@ async function perform(target, action) {
   }
 }
 
+async function changePassword(form) {
+  if (form.hasAttribute('aria-busy')) return;
+  const { currentPassword, newPassword, confirmPassword } = Object.fromEntries(new FormData(form));
+  const length = [...newPassword].length;
+  if (length < 12 || length > 128) {
+    showError('新密碼須為 12 到 128 個字元。', form);
+    form.elements.newPassword.focus();
+    return;
+  }
+  if (newPassword !== confirmPassword) {
+    showError('兩次輸入的新密碼不一致。', form);
+    form.elements.confirmPassword.focus();
+    return;
+  }
+  form.querySelector('[role="alert"]').hidden = true;
+  form.setAttribute('aria-busy', 'true');
+  for (const control of form.elements) control.disabled = true;
+  try {
+    await api('/api/admin/password', { currentPassword, newPassword });
+    form.reset();
+    form.closest('dialog').close();
+    renderSignIn(false, null, '密碼已變更。請用新密碼重新登入。');
+    page.querySelector('h1').focus();
+  } catch (error) {
+    showError(error.message || '無法連線到 StudyMate。', form);
+  } finally {
+    form.removeAttribute('aria-busy');
+    for (const control of form.elements) control.disabled = false;
+  }
+}
+
 page.addEventListener('submit', event => {
-  const form = event.target.closest('[data-auth]');
+  const form = event.target.closest('[data-auth], [data-password]');
   if (!form) return;
   event.preventDefault();
+  if ('password' in form.dataset) {
+    void changePassword(form);
+    return;
+  }
   const body = Object.fromEntries(new FormData(form));
   perform(event.submitter || form.querySelector('[type="submit"]'), () => api(`/api/auth/${form.dataset.auth}`, body));
 });
@@ -130,9 +189,23 @@ page.addEventListener('click', event => {
   if (!control) return;
   if ('refresh' in control.dataset) perform(control, async () => {});
   if ('logout' in control.dataset) perform(control, () => api('/api/auth/logout', {}));
+  if ('openPassword' in control.dataset) page.querySelector('#admin-password-dialog').showModal();
+  if ('closePassword' in control.dataset) control.closest('dialog').close();
   if (control.dataset.resolve) {
     perform(control, () => api(`/api/admin/reports/${encodeURIComponent(control.dataset.resolve)}/resolve`, {}));
   }
 });
+
+page.addEventListener('cancel', event => {
+  if (event.target.matches('#admin-password-dialog') && event.target.querySelector('form[aria-busy]')) {
+    event.preventDefault();
+  }
+}, true);
+
+page.addEventListener('close', event => {
+  if (!event.target.matches('#admin-password-dialog')) return;
+  event.target.querySelector('form').reset();
+  event.target.querySelector('[role="alert"]').hidden = true;
+}, true);
 
 refresh().catch(error => showError(error.message || '無法連線到 StudyMate。'));

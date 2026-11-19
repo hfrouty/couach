@@ -32,6 +32,7 @@ const authLimits = {
   login: { ip: 60, account: 8 },
   register: { ip: 20, account: 5 },
   setup: { ip: 8 },
+  password: { ip: 8 },
 };
 
 function fail(status, message) {
@@ -148,6 +149,18 @@ export function createStudyServer({
   ]));
   let authInFlight = 0;
 
+  async function performAuth(request, action, invoke) {
+    const data = await readJson(request);
+    if (authInFlight >= 8) throttle(3);
+    throttleAuth(request, action, data);
+    authInFlight += 1;
+    try {
+      return await invoke(data);
+    } finally {
+      authInFlight -= 1;
+    }
+  }
+
   async function handleApi(request, response, method, route) {
     if (method !== 'GET') requireSameOrigin(request, publicHttps);
     const account = await accounts.current(request);
@@ -155,15 +168,8 @@ export function createStudyServer({
     if (method === 'GET' && route === '/api/account') return { account, adminSetup };
     if (method === 'POST' && ['/api/auth/register', '/api/auth/login', '/api/auth/setup'].includes(route)) {
       const action = route.split('/').at(-1);
-      const data = await readJson(request);
-      if (authInFlight >= 8) throttle(3);
-      throttleAuth(request, action, data);
-      authInFlight += 1;
-      try {
-        return { account: await accounts[action](data, response) };
-      } finally {
-        authInFlight -= 1;
-      }
+      const authenticated = await performAuth(request, action, data => accounts[action](data, response));
+      return { account: authenticated };
     }
     if (method === 'POST' && route === '/api/auth/logout') {
       await accounts.logout(request, response);
@@ -175,6 +181,9 @@ export function createStudyServer({
     }
     if (route.startsWith('/api/admin/')) {
       if (account.role !== 'admin') fail(403, '此頁面僅限管理員使用。');
+      if (method === 'POST' && route === '/api/admin/password') {
+        return performAuth(request, 'password', data => accounts.changeAdminPassword(account, data, response));
+      }
       const resolveReport = route.match(/^\/api\/admin\/reports\/([a-z0-9-]+)\/resolve$/);
       if (method === 'POST' && resolveReport) records.resolveReport(resolveReport[1]);
       else if (method !== 'GET' || route !== '/api/admin/overview') fail(404, '找不到這個功能。');
