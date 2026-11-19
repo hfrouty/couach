@@ -19,7 +19,7 @@ function digest(value) {
   return createHash('sha256').update(value).digest();
 }
 
-function normalizeEmail(value) {
+export function normalizeEmail(value) {
   if (typeof value !== 'string' || value.length > 254) return null;
   const normalized = value.trim().toLowerCase();
   const [local, domain, extra] = normalized.split('@');

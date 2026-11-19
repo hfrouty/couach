@@ -1,9 +1,10 @@
 import { createServer } from 'node:http';
 import { mkdirSync, readFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { createAccounts } from './accounts.mjs';
+import { createAccounts, normalizeEmail } from './accounts.mjs';
 import { createRecords } from './records.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -27,9 +28,20 @@ const publicFiles = new Map([
 ]);
 const dataLimit = 16 * 1024;
 const authWindow = 60_000;
+const authLimits = {
+  login: { ip: 60, account: 8 },
+  register: { ip: 20, account: 5 },
+  setup: { ip: 8 },
+};
 
 function fail(status, message) {
   throw Object.assign(new Error(message), { status });
+}
+
+function throttle(seconds) {
+  throw Object.assign(new Error(`操作太頻繁，請在 ${seconds} 秒後再試。`), {
+    status: 429, retryAfter: seconds,
+  });
 }
 
 function sendJson(response, status, body) {
@@ -96,19 +108,27 @@ function requireSameOrigin(request, railway) {
 function authLimiter(railway) {
   const attempts = new Map();
   let clearAt = 0;
-  return request => {
+  return (request, action, data) => {
     const now = Date.now();
     if (now >= clearAt) {
       attempts.clear();
       clearAt = now + authWindow;
     }
-    const forwarded = railway ? request.headers['x-forwarded-for']?.split(',').at(-1)?.trim() : '';
-    const ip = forwarded || request.socket.remoteAddress || 'unknown';
-    const count = attempts.get(ip) ?? 0;
-    if (count >= 12 || (!attempts.has(ip) && attempts.size >= 5000)) {
-      fail(429, '操作太頻繁，請稍後再試。');
+    const realIp = request.headers['x-real-ip'];
+    const ip = railway && typeof realIp === 'string' && isIP(realIp)
+      ? realIp
+      : request.socket.remoteAddress || 'unknown';
+    const limits = authLimits[action];
+    const ipKey = `${action}:${ip}`;
+    const keys = [[ipKey, limits.ip]];
+    const email = limits.account && normalizeEmail(data.email);
+    if (email) keys.push([`${ipKey}/${email}`, limits.account]);
+
+    const newKeys = keys.filter(([key]) => !attempts.has(key)).length;
+    if (attempts.size + newKeys > 20_000 || keys.some(([key, limit]) => (attempts.get(key) ?? 0) >= limit)) {
+      throttle(Math.ceil((clearAt - now) / 1000));
     }
-    attempts.set(ip, count + 1);
+    for (const [key] of keys) attempts.set(key, (attempts.get(key) ?? 0) + 1);
   };
 }
 
@@ -134,10 +154,10 @@ export function createStudyServer({
     const adminSetup = adminSetupToken.length >= 32 && !accounts.adminConfigured();
     if (method === 'GET' && route === '/api/account') return { account, adminSetup };
     if (method === 'POST' && ['/api/auth/register', '/api/auth/login', '/api/auth/setup'].includes(route)) {
-      throttleAuth(request);
       const action = route.split('/').at(-1);
       const data = await readJson(request);
-      if (authInFlight >= 8) fail(429, '操作太頻繁，請稍後再試。');
+      if (authInFlight >= 8) throttle(3);
+      throttleAuth(request, action, data);
       authInFlight += 1;
       try {
         return { account: await accounts[action](data, response) };
@@ -207,7 +227,7 @@ export function createStudyServer({
     } catch (error) {
       const status = Number.isInteger(error.status) ? error.status : 500;
       if (status >= 500 && status !== 503) console.error(error);
-      if (status === 429) response.setHeader('Retry-After', String(authWindow / 1000));
+      if (error.retryAfter) response.setHeader('Retry-After', String(error.retryAfter));
       return sendJson(response, status, { error: status === 500 ? '暫時無法處理，請稍後再試。' : error.message });
     }
   });

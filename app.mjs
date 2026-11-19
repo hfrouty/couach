@@ -282,7 +282,7 @@ function renderAuth() {
               <button class="button button-primary account-submit" type="submit">${register ? '註冊並登入' : '登入'}</button>
             </form>
             <div class="account-switch"><span>${register ? '已經有帳號？' : '第一次使用？'}</span>${button(register ? '我要登入' : '建立帳號', 'auth-mode', { variant: 'text' })}</div>
-            ${adminSetup ? '<a class="account-setup-link" href="/admin">管理員初始設定</a>' : ''}
+            <a class="account-setup-link" href="/admin">${adminSetup ? '管理員初始設定' : '管理員登入'}</a>
           </div>`}
       </section>
     </main>`;
