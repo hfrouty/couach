@@ -50,7 +50,7 @@ function validatedProfile(data, current = {}) {
   return profile;
 }
 
-export function createAccounts(db, { secureCookies = true, adminSetupToken, temporarySetup } = {}) {
+export function createAccounts(db, { secureCookies = true, adminSetupToken } = {}) {
   const cookieName = secureCookies ? '__Host-studymate_session' : 'studymate_session';
   const cookieAttributes = `Path=/; HttpOnly; SameSite=Lax${secureCookies ? '; Secure' : ''}`;
   const setupHash = typeof adminSetupToken === 'string' && adminSetupToken.length >= 32 ? digest(adminSetupToken) : null;
@@ -112,16 +112,6 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken, temp
 
   function adminConfigured() {
     return Boolean(findAdmin.get());
-  }
-
-  function effectiveSetupHash() {
-    if (setupHash) return setupHash;
-    if (!temporarySetup || temporarySetup.expiresAt <= Date.now()) return null;
-    return Buffer.from(temporarySetup.digest, 'hex');
-  }
-
-  function setupAvailable() {
-    return Boolean(effectiveSetupHash()) && !adminConfigured();
   }
 
   function grantSession(accountId) {
@@ -197,11 +187,10 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken, temp
 
   function setup(data, res) {
     if (adminConfigured()) fail(409, '管理員帳號已建立。');
-    const expectedHash = effectiveSetupHash();
-    if (!expectedHash) fail(503, '管理員設定尚未開放。');
+    if (!setupHash) fail(503, '管理員設定尚未開放。');
 
     const token = data?.setupToken;
-    if (typeof token !== 'string' || token.length > 4096 || !timingSafeEqual(digest(token), expectedHash)) {
+    if (typeof token !== 'string' || token.length > 4096 || !timingSafeEqual(digest(token), setupHash)) {
       fail(403, '管理員設定密鑰不正確。');
     }
     return createAccount(data, res, 'admin');
@@ -217,5 +206,5 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken, temp
     return selectAccounts.all();
   }
 
-  return { register, login, logout, current, setup, updateProfile, listAccounts, adminConfigured, setupAvailable };
+  return { register, login, logout, current, setup, updateProfile, listAccounts, adminConfigured };
 }

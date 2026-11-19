@@ -136,12 +136,11 @@ export function createStudyServer({
   databaseFile,
   publicHttps = false,
   adminSetupToken = '',
-  temporarySetup,
 }) {
   if (databaseFile !== ':memory:') mkdirSync(dirname(databaseFile), { recursive: true });
   const db = new DatabaseSync(databaseFile, { timeout: 5000 });
   db.exec('PRAGMA journal_mode = WAL');
-  const accounts = createAccounts(db, { secureCookies: publicHttps, adminSetupToken, temporarySetup });
+  const accounts = createAccounts(db, { secureCookies: publicHttps, adminSetupToken });
   const records = createRecords(db);
   const throttleAuth = authLimiter(publicHttps);
   const files = new Map([...publicFiles].map(([route, file]) => [
@@ -152,7 +151,8 @@ export function createStudyServer({
   async function handleApi(request, response, method, route) {
     if (method !== 'GET') requireSameOrigin(request, publicHttps);
     const account = await accounts.current(request);
-    if (method === 'GET' && route === '/api/account') return { account, adminSetup: accounts.setupAvailable() };
+    const adminSetup = adminSetupToken.length >= 32 && !accounts.adminConfigured();
+    if (method === 'GET' && route === '/api/account') return { account, adminSetup };
     if (method === 'POST' && ['/api/auth/register', '/api/auth/login', '/api/auth/setup'].includes(route)) {
       const action = route.split('/').at(-1);
       const data = await readJson(request);
@@ -209,10 +209,7 @@ export function createStudyServer({
     try {
       const method = request.method;
       const route = new URL(request.url, 'http://local').pathname;
-      if (method === 'GET' && route === '/health') {
-        if (temporarySetup) response.setHeader('X-StudyMate-Initial-Setup', 'temporary');
-        return sendJson(response, 200, { ok: true });
-      }
+      if (method === 'GET' && route === '/health') return sendJson(response, 200, { ok: true });
       if (route.startsWith('/api/')) {
         const result = await handleApi(request, response, method, route);
         return sendJson(response, 200, result);
@@ -245,16 +242,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     throw new Error('Attach a Railway volume before starting StudyMate. Mount it at /app/data.');
   }
   const databaseFile = volume ? join(volume, 'studymate.sqlite') : join(root, 'data', 'studymate.sqlite');
-  // Short-lived verification for the first administrator of this Railway service.
-  const temporarySetup = process.env.RAILWAY_SERVICE_ID === 'fe86563b-8fec-440e-92a4-45789f3b5a1b'
-    && process.env.RAILWAY_ENVIRONMENT_ID === '4094ec84-1614-4c0f-973d-f71619bc49ca'
-    ? { digest: '5931a5c81e84588ea283c3c8512f9008c573d7a7455b5a149bc8e53278b378a6', expiresAt: 1795109000775 }
-    : undefined;
   const server = createStudyServer({
     databaseFile,
     publicHttps: onRailway,
     adminSetupToken: process.env.ADMIN_SETUP_TOKEN ?? '',
-    temporarySetup,
   });
   const port = Number(process.env.PORT ?? 8000);
   server.listen(port, onRailway ? '0.0.0.0' : '127.0.0.1', () => console.log(`StudyMate is listening on ${port}`));
