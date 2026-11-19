@@ -30,6 +30,7 @@ let adminSetup = false;
 let activeRequest = false;
 let studyVersion = 0;
 let focusSync = null;
+const publishDrafts = new Map();
 const navigation = [
   ['explore', 'compass', '找讀書夥伴'],
   ['plans', 'calendar', '我的預約'],
@@ -39,12 +40,12 @@ const navigation = [
 let campusNotice = '';
 const entryUrl = new URL(window.location.href);
 const campusNotices = new Map([
-  ['school', '請選擇支援學校的 Google 校園帳號。'],
-  ['link', '這個信箱可能已有 StudyMate 帳號，請先用舊帳密登入，再連結校園帳號。'],
-  ['account', '校園帳號未能連結，請確認目前登入的 StudyMate 帳號後重試。'],
-  ['failed', '校園帳號登入未完成，請重新開始。'],
-  ['busy', '校園登入目前較忙，請稍後再試。'],
-  ['unavailable', '校園登入目前未開放，請稍後再試。'],
+  ['school', '請依所選類型使用一般 Gmail 或支援學校的 Google 帳號。'],
+  ['link', '這個信箱可能已有 StudyMate 帳號，請先用舊帳密登入，再連結 Google 帳號。'],
+  ['account', 'Google 帳號未能連結，請確認目前登入的 StudyMate 帳號後重試。'],
+  ['failed', 'Google 登入未完成，請重新開始。'],
+  ['busy', 'Google 登入目前較忙，請稍後再試。'],
+  ['unavailable', 'Google 登入目前未開放，請稍後再試。'],
 ]);
 if (entryUrl.searchParams.has('campus')) {
   campusNotice = campusNotices.get(entryUrl.searchParams.get('campus')) ?? '';
@@ -127,8 +128,8 @@ function resetAccount() {
   loadError = '';
 }
 
-function needsCampusLink() {
-  return Boolean(campusLogin && state.account?.role === 'student' && !state.account.campusId);
+function needsGoogleLink() {
+  return Boolean(campusLogin && state.account?.role === 'student' && !state.account.googleEmail);
 }
 
 function rememberedCampus(accountId) {
@@ -312,7 +313,7 @@ function renderShell(content) {
 function render() {
   cleanup();
   cleanup = () => {};
-  if (loading || !state.account || needsCampusLink()) {
+  if (loading || !state.account || needsGoogleLink()) {
     app.innerHTML = renderAuth();
     return;
   }
@@ -335,31 +336,31 @@ function passwordEntry(register, label) {
   </form>`;
 }
 
-function campusEntry() {
+function googleEntry() {
   const notice = campusNotice ? `<p class="account-error campus-entry-notice" role="alert">${escape(campusNotice)}</p>` : '';
-  if (needsCampusLink()) {
+  if (needsGoogleLink()) {
     const account = state.account;
-    return `<h2>連結學校帳號</h2>
-      <p class="account-description">連結後會開啟你的校園地圖，原本的邀約與預約會留在此帳號。</p>
+    return `<h2>連結 Google 帳號</h2>
+      <p class="account-description">可連結一般 Gmail 或校園 Google 帳號，原本的邀約與預約會留在此帳號。</p>
       <p class="account-email campus-linked-account">${escape(account.email)}</p>
       ${notice}
-      ${campusAuthForm(account)}
+      ${googleAuthForm(account)}
       <div class="account-switch">${button('登出', 'logout', { variant: 'text' })}</div>`;
   }
-  return `<h2>使用學校帳號登入</h2>
-    <p class="account-description">使用學校的 Google 帳號，登入後直接開啟所屬校園的地圖。</p>
+  return `<h2>使用 Google 帳號登入</h2>
+    <p class="account-description">一般 Gmail 可以登入後選擇校園，校園帳號會直接開啟所屬學校的地圖。</p>
     ${notice}
-    ${campusAuthForm()}
+    ${googleAuthForm()}
     <div class="account-switch">${button(legacyLogin ? '收起舊帳號表單' : '連結舊 StudyMate 帳號', 'legacy-auth', { variant: 'text' })}</div>
-    ${legacyLogin ? passwordEntry(false, '登入並連結校園帳號') : ''}`;
+    ${legacyLogin ? passwordEntry(false, '登入並連結 Google 帳號') : ''}`;
 }
 
-function campusAuthForm(account) {
-  const schools = CAMPUSES.map(campus => [campus.id, campus.name]);
+function googleAuthForm(account) {
+  const choices = [['personal', '一般 Gmail'], ...CAMPUSES.map(campus => [campus.id, campus.name])];
   return `<form class="dialog-form account-form" method="get" action="/api/auth/campus/start">
     ${account ? `<input type="hidden" name="intent" value="link"><input type="hidden" name="account" value="${escape(account.id)}">` : ''}
-    ${selectField('campus', '選擇學校', schools, DEFAULT_CAMPUS_ID)}
-    <button class="button button-primary account-submit" type="submit">${icon('shield')} ${account ? '連結 Google 校園帳號' : '使用 Google 校園帳號登入'}</button>
+    ${selectField('campus', 'Google 帳號類型', choices, 'personal')}
+    <button class="button button-primary account-submit" type="submit">${icon('shield')} ${account ? '連結 Google 帳號' : '使用 Google 帳號登入'}</button>
   </form>`;
 }
 
@@ -385,7 +386,7 @@ function renderAuth() {
             ${button('重新連線', 'retry-bootstrap', { variant: 'primary' })}
           </div>` : `
           <div class="account-card">
-            ${campusLogin ? campusEntry() : `
+            ${campusLogin ? googleEntry() : `
             <h2>${register ? '建立共讀帳號' : '歡迎回來'}</h2>
             <p class="account-description">${register ? '建立帳號後，就可以發起或加入共讀。' : '使用電子郵件登入 StudyMate。'}</p>
             ${campusNotice ? `<p class="account-error campus-entry-notice" role="alert">${escape(campusNotice)}</p>` : ''}
@@ -398,7 +399,8 @@ function renderAuth() {
 }
 
 function renderExplore() {
-  const results = matchingSessions();
+  const now = Date.now();
+  const results = matchingSessions(now);
   const pending = Object.values(state.reservations).filter(item => item.status === 'pending' && !hasEnded(item.session)).length;
   const upcoming = Object.values(state.reservations).filter(item => item.status === 'confirmed' && !hasEnded(item.session)).length;
   const publish = button('發起邀約', 'publish', { glyph: 'plus', variant: 'primary' });
@@ -407,7 +409,7 @@ function renderExplore() {
   </label>`;
   return `
     ${renderCampusMap({
-      campus: activeCampus(), selectedRegion: filters.region, invitations: sessionsAtCampus(),
+      campus: activeCampus(), selectedRegion: filters.region, invitations: mapInvitations(now),
       actions: campusSelector + button('即時找夥伴', 'find-now', { glyph: 'bolt', variant: 'secondary' }) + publish,
     })}
     <div class="dashboard-grid">
@@ -423,7 +425,13 @@ function renderExplore() {
           </div>
           ${button('篩選', 'filters', { glyph: 'sliders' })}
         </div>
-        <div class="results-line"><span id="result-count" aria-live="polite">${escape(resultCount(results))}</span><label class="sort-control"><span class="sr-only">排序</span><select id="sort">${selectOptions([['score', '媒合度優先'], ['distance', '區域距離優先'], ['time', '時間優先']], filters.sort)}</select>${icon('chevron')}</label></div>
+        <div class="results-line">
+          <div class="results-summary">
+            <span id="result-count" aria-live="polite">${resultCount(results)}</span>
+            <div class="active-filters" id="active-filters" role="group" aria-label="已套用篩選">${renderFilterChips()}</div>
+          </div>
+          <label class="sort-control"><span class="sr-only">排序</span><select id="sort">${selectOptions([['score', '媒合度優先'], ['distance', '區域距離優先'], ['time', '時間優先']], filters.sort)}</select>${icon('chevron')}</label>
+        </div>
         <div id="results" class="session-grid">${renderResults(results)}</div>
       </section>
       <aside class="dashboard-aside" aria-label="讀書小工具">
@@ -447,24 +455,37 @@ function hasEnded(session, now = Date.now()) {
   return Date.parse(session.end) <= now;
 }
 
-function matchingSessions() {
-  const now = Date.now();
+function canJoinSession(session, now = Date.now()) {
+  const reservation = state.reservations[session.id];
+  return !isOwnSession(session) && !session.closed && !hasEnded(session, now)
+    && session.joined < session.capacity && (!reservation || reservation.status === 'cancelled');
+}
+
+function matchingCandidates(now, acrossRegions = false) {
+  return sessionsAtCampus().filter(session => (
+    !session.closed && !hasEnded(session, now)
+    && (!filters.subject || session.subject === filters.subject)
+    && (!filters.mode || session.mode === filters.mode)
+    && (acrossRegions || !filters.region || session.region === filters.region)
+    && (!filters.style || session.style === filters.style)
+    && (!filters.department || session.department === filters.department)
+    && (!filters.cross || session.department !== state.account.department)
+    && (filters.timing !== 'now' || (isLive(session, now) && canJoinSession(session, now)))
+    && (filters.timing !== 'later' || Date.parse(session.start) > now)
+  ));
+}
+
+function mapInvitations(now) {
+  return filters.timing === 'now' ? matchingCandidates(now, true) : sessionsAtCampus();
+}
+
+function matchingSessions(now) {
   const nearHome = (state.account.campusId ?? DEFAULT_CAMPUS_ID) === selectedCampusId;
   const preferences = { ...state.account, region: nearHome ? state.account.region : '', start: now, end: now + 90 * minute };
   for (const key of ['region', 'subject', 'style']) {
     if (filters[key]) preferences[key] = filters[key];
   }
-  return sessionsAtCampus().filter(session => (
-    !session.closed && !hasEnded(session, now)
-    && (!filters.subject || session.subject === filters.subject)
-    && (!filters.mode || session.mode === filters.mode)
-    && (!filters.region || session.region === filters.region)
-    && (!filters.style || session.style === filters.style)
-    && (!filters.department || session.department === filters.department)
-    && (!filters.cross || session.department !== state.account.department)
-    && (filters.timing !== 'now' || isLive(session, now))
-    && (filters.timing !== 'later' || Date.parse(session.start) > now)
-  )).map(session => ({ session, ...scoreSession(session, preferences) })).sort((a, b) => {
+  return matchingCandidates(now).map(session => ({ session, ...scoreSession(session, preferences) })).sort((a, b) => {
     if (filters.sort === 'distance') return (a.distance ?? Infinity) - (b.distance ?? Infinity) || b.score - a.score;
     if (filters.sort === 'time') return Date.parse(a.session.start) - Date.parse(b.session.start);
     return b.score - a.score;
@@ -472,7 +493,14 @@ function matchingSessions() {
 }
 
 function renderResults(results) {
-  return results.length ? results.map(renderCard).join('') : `
+  if (results.length) return results.map(renderCard).join('');
+  if (filters.timing === 'now') {
+    return `<div class="empty-state"><span class="tile-icon">${icon('search')}</span>
+      <h3>目前沒有其他人正在揪團</h3>
+      <a class="button button-secondary" href="#plans" data-view="plans">查看我的邀約</a>
+    </div>`;
+  }
+  return `
     <div class="empty-state"><span class="tile-icon">${icon('search')}</span>
     ${sessionsAtCampus().some(session => !session.closed && !hasEnded(session))
       ? `<h3>目前沒有符合條件的邀約</h3><p>可以放寬條件，或自己發起共讀。</p>${button('清除篩選', 'reset-filters')}`
@@ -481,16 +509,43 @@ function renderResults(results) {
 }
 
 function resultCount(results) {
-  return `${filters.region ? `${filters.region} · ` : ''}${results.length} 個邀約`;
+  return `${results.length} 個邀約`;
+}
+
+function activeFilters() {
+  return [
+    ['subject', filters.subject],
+    ['mode', { 'in-person': '實體', online: '線上' }[filters.mode]],
+    ['region', filters.region],
+    ['style', filters.style],
+    ['department', filters.department],
+    ['cross', filters.cross ? '排除同系學生' : ''],
+  ].filter(([, label]) => label);
+}
+
+function renderFilterChips() {
+  return activeFilters().map(([key, label]) => `<button type="button" class="filter-chip" data-action="remove-filter"
+    data-value="${key}" aria-label="移除篩選：${escape(label)}">${escape(label)} <span aria-hidden="true">×</span></button>`).join('');
+}
+
+function removeFilter(key) {
+  const index = activeFilters().findIndex(([name]) => name === key);
+  if (index === -1) return;
+  filters[key] = initialFilters[key];
+  refreshResults();
+  const chips = document.querySelectorAll('#active-filters .filter-chip');
+  (chips[Math.min(index, chips.length - 1)] ?? app.querySelector('[data-action="filters"]'))?.focus();
 }
 
 function refreshResults() {
   const container = document.querySelector('#results');
   if (!container) return;
-  const results = matchingSessions();
+  const now = Date.now();
+  const results = matchingSessions(now);
   container.innerHTML = renderResults(results);
   document.querySelector('#result-count').textContent = resultCount(results);
-  updateCampusMapSelection(app, filters.region);
+  document.querySelector('#active-filters').innerHTML = renderFilterChips();
+  updateCampusMapSelection(app, filters.region, mapInvitations(now));
   for (const control of app.querySelectorAll('[data-action="timing"]')) {
     control.setAttribute('aria-pressed', String(control.dataset.value === filters.timing));
   }
@@ -572,7 +627,10 @@ function renderPlans() {
         ${own.length ? own.map(session => `
           <article class="plan-item"><span class="status-pill ${session.closed || hasEnded(session) ? 'status-later' : 'status-live'}">${session.closed ? '已關閉' : hasEnded(session) ? '已結束' : '招募中'}</span>
             <h3>${escape(session.title)}</h3>${sessionFacts(session, null, true)}
-            ${session.closed || hasEnded(session) ? '' : button('關閉邀約', 'close-invite', { attrs: `data-id="${escape(session.id)}"` })}
+            ${session.closed || hasEnded(session) ? '' : `<div class="plan-actions">
+              ${button('編輯邀約', 'edit-invite', { attrs: `data-id="${escape(session.id)}"` })}
+              ${button('關閉邀約', 'close-invite', { attrs: `data-id="${escape(session.id)}"` })}
+            </div>`}
           </article>`).join('') : '<p class="empty-state">你目前還沒有發起任何邀約。</p>'}
         ${button('發起邀約', 'publish', { glyph: 'plus', variant: 'primary' })}
       </section>
@@ -608,7 +666,7 @@ function showProfile() {
     <form data-form="profile" class="dialog-form">
       <label class="field"><span>暱稱</span><input name="name" maxlength="40" autocomplete="nickname" value="${escape(p.name)}" required></label>
       <div class="field"><span>電子郵件</span><p class="field-value account-email">${escape(p.email)}</p></div>
-      ${p.campusEmail ? `<div class="field"><span>已連結的校園帳號</span><p class="field-value account-email">${escape(p.campusEmail)}</p></div>` : ''}
+      ${p.googleEmail ? `<div class="field"><span>已連結的${p.campusId ? '校園' : ' Google '}帳號</span><p class="field-value account-email">${escape(p.googleEmail)}</p></div>` : ''}
       <div class="field-grid">
         ${selectField('department', '科系', DEPARTMENTS, p.department)}
         ${selectField('region', '所在區域', campusRegionNames(p.campusId), p.region)}
@@ -636,31 +694,71 @@ function showFilters() {
     </form>`);
 }
 
+function publishDraftKey(campusId) {
+  return `${state.account.id}:${campusId}`;
+}
+
+function savePublishDraft(control) {
+  const key = publishDraftKey(control.form.dataset.campusId);
+  const draft = publishDrafts.get(key) ?? {};
+  publishDrafts.set(key, { ...draft, [control.name]: control.value });
+}
+
 function showPublish() {
   const taipeiEpoch = Date.now() + 8 * 60 * minute;
   const earliest = new Date(taipeiEpoch).toISOString().slice(0, 16);
   const suggested = new Date(taipeiEpoch + 30 * minute).toISOString().slice(0, 16);
   const p = state.account;
   const campus = activeCampus();
-  const homeRegion = (p.campusId ?? DEFAULT_CAMPUS_ID) === campus.id ? p.region : campus.regions[0].name;
+  const regions = campusRegionNames(campus.id);
+  const draft = publishDrafts.get(publishDraftKey(campus.id)) ?? {};
+  const homeRegion = (p.campusId ?? DEFAULT_CAMPUS_ID) === campus.id ? p.region : '';
+  const region = [draft.region, filters.region, homeRegion].find(value => regions.includes(value)) ?? regions[0];
+  const mode = draft.mode ?? 'in-person';
+  const schedule = draft.schedule ?? 'now';
+  const scheduled = schedule === 'later';
   showDialog('發起讀書邀約', `
     <form data-form="publish" data-campus-id="${escape(campus.id)}" class="dialog-form">
-      <label class="field"><span>邀約標題</span><input name="title" required maxlength="42" placeholder="例如：圖書館一起複習微積分"></label>
+      <label class="field"><span>邀約標題</span><input name="title" required autofocus maxlength="42" placeholder="例如：圖書館一起複習微積分" value="${escape(draft.title ?? '')}"></label>
       <div class="field-grid">
-        ${selectField('subject', '科目', SUBJECTS, p.subject)}
-        ${selectField('style', '共讀習慣', STYLES, p.style)}
-        ${selectField('mode', '共讀方式', [['in-person', '實體'], ['online', '線上']], 'in-person')}
-        ${selectField('region', '校園區域', campusRegionNames(campus.id), homeRegion)}
-        ${selectField('capacity', '人數上限', [['2', '2 人（一對一）'], ['3', '3 人'], ['4', '4 人'], ['5', '5 人'], ['6', '6 人']], '2')}
-        ${selectField('duration', '共讀長度', [['25', '25 分鐘'], ['50', '50 分鐘'], ['60', '60 分鐘'], ['90', '90 分鐘'], ['120', '120 分鐘']], '60')}
-        ${selectField('schedule', '開始方式', [['now', '現在開始'], ['later', '預約時間']], 'now')}
-        <label class="field" hidden><span>開始時間（台灣時間）</span><input name="start" type="datetime-local" min="${earliest}" value="${suggested}" disabled></label>
+        ${selectField('subject', '科目', SUBJECTS, draft.subject ?? p.subject)}
+        ${selectField('style', '共讀習慣', STYLES, draft.style ?? p.style)}
+        ${selectField('mode', '共讀方式', [['in-person', '實體'], ['online', '線上']], mode)}
+        ${selectField('region', '校園區域', regions, region)}
+        ${selectField('capacity', '人數上限', [['2', '2 人（一對一）'], ['3', '3 人'], ['4', '4 人'], ['5', '5 人'], ['6', '6 人']], draft.capacity ?? '2')}
+        ${selectField('duration', '共讀長度', [['25', '25 分鐘'], ['50', '50 分鐘'], ['60', '60 分鐘'], ['90', '90 分鐘'], ['120', '120 分鐘']], draft.duration ?? '60')}
+        ${selectField('schedule', '開始方式', [['now', '現在開始'], ['later', '預約時間']], schedule)}
+        <label class="field"${scheduled ? '' : ' hidden'}><span>開始時間（台灣時間）</span><input name="start" type="datetime-local" min="${earliest}" value="${escape(draft.start ?? suggested)}"${scheduled ? ' required' : ' disabled'}></label>
       </div>
-      <label class="field"><span>共讀說明（選填）</span><textarea name="note" rows="2" maxlength="180" placeholder="說明想一起讀什麼。"></textarea></label>
+      <label class="field"><span>共讀說明（選填）</span><textarea name="note" rows="2" maxlength="180" placeholder="說明想一起讀什麼。">${escape(draft.note ?? '')}</textarea></label>
       <p class="form-note" data-campus-privacy>${icon('shield')} 實體邀約僅顯示概略校園區域。</p>
       <p class="account-error" data-request-error role="alert" hidden></p>
       <button class="button button-primary" type="submit">${icon('plus')} 發布邀約</button>
     </form>`, `${escape(campus.name)} · ${escape(campus.area)}`);
+  updatePublishLocation(dialog.querySelector('[data-form="publish"]'));
+}
+
+function updatePublishLocation(form) {
+  const online = form.elements.namedItem('mode').value === 'online';
+  const region = form.elements.namedItem('region');
+  region.disabled = online;
+  region.closest('.field').hidden = online;
+  form.querySelector('[data-campus-privacy]').hidden = online;
+}
+
+function showInviteEdit(id) {
+  const session = getSession(id);
+  if (!session || !isOwnSession(session) || session.closed || hasEnded(session)) return;
+  const campus = getCampus(session.campusId ?? DEFAULT_CAMPUS_ID);
+  showDialog('編輯讀書邀約', `
+    <form data-form="edit-invite" data-id="${escape(id)}" class="dialog-form">
+      <label class="field"><span>邀約標題</span><input name="title" required autofocus maxlength="42" value="${escape(session.title)}"></label>
+      ${session.mode === 'online' ? '<p class="form-note">線上共讀</p>'
+        : selectField('region', '校園區域', campusRegionNames(session.campusId), session.region)}
+      <label class="field"><span>共讀說明（選填）</span><textarea name="note" rows="2" maxlength="180">${escape(session.note ?? '')}</textarea></label>
+      <p class="account-error" data-request-error role="alert" hidden></p>
+      <button class="button button-primary" type="submit">${icon('check')} 儲存修改</button>
+    </form>`, `${escape(campus?.name ?? session.school)} · ${formatSlot(session)}`);
 }
 
 function getSession(id) {
@@ -672,7 +770,7 @@ function showDetails(id) {
   if (!session) return;
   const reservation = state.reservations[id];
   const own = isOwnSession(session);
-  const canJoin = !own && !hasEnded(session) && !session.closed && session.joined < session.capacity && (!reservation || reservation.status === 'cancelled');
+  const canJoin = canJoinSession(session);
   showDialog(escape(session.title), `
     <div class="detail-content">
       <div class="host">${avatar(session.initials, session.avatarColor)}<span><strong>${escape(session.host)}</strong><small>${escape(session.department)}</small></span></div>
@@ -701,34 +799,49 @@ function showSafety(id, action) {
     </form>`, report ? '檢舉會交給管理員處理。' : '');
 }
 
-async function handlePublish(form, data) {
-  const titleControl = form.elements.namedItem('title');
-  const title = String(data.get('title')).trim();
-  const scheduled = data.get('schedule') === 'later';
-  const start = scheduled ? Date.parse(`${data.get('start') || ''}:00+08:00`) : Date.now();
+function readInviteEdits(form, data) {
+  const title = String(data.get('title') ?? '').trim();
   if (!title) {
+    const titleControl = form.elements.namedItem('title');
     titleControl.setCustomValidity('請輸入邀約標題。');
     titleControl.reportValidity();
-    return;
+    return null;
   }
+  return { title, region: data.get('region') ?? '', note: String(data.get('note') ?? '').trim() };
+}
+
+async function handlePublish(form, data) {
+  const edits = readInviteEdits(form, data);
+  if (!edits) return;
+  const scheduled = data.get('schedule') === 'later';
+  const start = scheduled ? Date.parse(`${data.get('start') || ''}:00+08:00`) : Date.now();
   if (!Number.isFinite(start) || (scheduled && start <= Date.now())) {
     const control = form.elements.namedItem('start');
     control.setCustomValidity('請選擇未來的開始時間。');
     control.reportValidity();
     return;
   }
-  const mode = data.get('mode');
   const session = {
-    title, mode, campusId: form.dataset.campusId, region: mode === 'online' ? '' : data.get('region'),
+    ...edits, mode: data.get('mode'), campusId: form.dataset.campusId,
     subject: data.get('subject'), style: data.get('style'),
     capacity: Number(data.get('capacity')),
     start: new Date(start).toISOString(), end: new Date(start + Number(data.get('duration')) * minute).toISOString(),
-    note: String(data.get('note')).trim(),
   };
   if (!await mutateStudy('/study/sessions', session)) return;
+  publishDrafts.delete(publishDraftKey(form.dataset.campusId));
   dialog.close();
   navigate('plans');
   toast('已發起讀書邀約。');
+}
+
+async function handleInviteEdit(form, data) {
+  const edits = readInviteEdits(form, data);
+  const id = form.dataset.id;
+  if (!edits || !await mutateStudy(`/study/sessions/${encodeURIComponent(id)}/edit`, edits)) return;
+  dialog.close();
+  render();
+  app.querySelector(`[data-action="edit-invite"][data-id="${CSS.escape(id)}"]`)?.focus({ preventScroll: true });
+  toast('已更新讀書邀約。');
 }
 
 async function updateReservation(id, action) {
@@ -766,7 +879,7 @@ async function runRequest(control, execute, errorNode) {
 
 async function updateViewData() {
   const currentView = view;
-  if (!state.account || needsCampusLink() || !['plans', 'explore'].includes(view)) return;
+  if (!state.account || needsGoogleLink() || !['plans', 'explore'].includes(view)) return;
   try {
     if (!await refreshStudy() || currentView !== view || dialog.open || activeRequest) return;
     const mainFocused = document.activeElement === app.querySelector('main');
@@ -788,7 +901,7 @@ async function bootstrap() {
     campusLogin = canUseCampus;
     if (account) {
       bindAccount(account);
-      if (!needsCampusLink()) {
+      if (!needsGoogleLink()) {
         await refreshStudy();
         syncFocus();
         if (campusNotice) {
@@ -868,6 +981,9 @@ document.addEventListener('click', event => {
       filters.timing = value;
       refreshResults();
       break;
+    case 'remove-filter':
+      removeFilter(value);
+      break;
     case 'map-region':
       filters.region = filters.region === value ? '' : value;
       if (filters.region && filters.mode === 'online') filters.mode = '';
@@ -881,6 +997,7 @@ document.addEventListener('click', event => {
     case 'profile': showProfile(); break;
     case 'filters': showFilters(); break;
     case 'publish': showPublish(); break;
+    case 'edit-invite': showInviteEdit(id); break;
     case 'details': showDetails(id); break;
     case 'block':
     case 'report': showSafety(id, action); break;
@@ -903,7 +1020,9 @@ document.addEventListener('click', event => {
 
 document.addEventListener('input', event => {
   const { target } = event;
-  if (target.form?.dataset.form === 'publish') target.setCustomValidity('');
+  const action = target.form?.dataset.form;
+  if (action === 'publish' || action === 'edit-invite') target.setCustomValidity('');
+  if (action === 'publish' && !target.matches('select')) savePublishDraft(target);
 });
 
 document.addEventListener('change', event => {
@@ -918,13 +1037,8 @@ document.addEventListener('change', event => {
     refreshResults();
   }
   if (target.form?.dataset.form !== 'publish') return;
-  if (target.name === 'mode') {
-    const online = target.value === 'online';
-    const region = target.form.elements.namedItem('region');
-    region.disabled = online;
-    region.closest('.field').hidden = online;
-    target.form.querySelector('[data-campus-privacy]').hidden = online;
-  }
+  if (target.matches('select')) savePublishDraft(target);
+  if (target.name === 'mode') updatePublishLocation(target.form);
   if (target.name === 'schedule') {
     const start = target.form.elements.namedItem('start');
     start.required = target.value === 'later';
@@ -944,7 +1058,7 @@ app.addEventListener('submit', event => {
     bindAccount(account);
     campusNotice = '';
     try {
-      if (!needsCampusLink()) {
+      if (!needsGoogleLink()) {
         await refreshStudy();
         syncFocus();
       }
@@ -988,6 +1102,9 @@ async function submitDialog(form, data) {
     }
     case 'publish':
       await handlePublish(form, data);
+      break;
+    case 'edit-invite':
+      await handleInviteEdit(form, data);
       break;
     case 'join':
       if (!data.has('agree')) return;

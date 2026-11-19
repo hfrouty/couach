@@ -103,7 +103,7 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
   const findUnchangedAccount = db.prepare(`SELECT ${publicFields} FROM accounts WHERE id = ? AND password_hash = ?`);
   const selectAccounts = db.prepare(`SELECT ${publicFields} FROM accounts ORDER BY created_at DESC, id DESC`);
   const findAdmin = db.prepare("SELECT id FROM accounts WHERE role = 'admin'");
-  const campusByAccount = db.prepare('SELECT subject, campus_id AS campusId, email AS campusEmail FROM campus_identities WHERE account_id = ?');
+  const campusByAccount = db.prepare('SELECT subject, campus_id AS campusId, email AS googleEmail FROM campus_identities WHERE account_id = ?');
   const campusBySubject = db.prepare('SELECT account_id AS accountId, campus_id AS campusId FROM campus_identities WHERE subject = ?');
   const campusByEmail = db.prepare('SELECT account_id FROM campus_identities WHERE email = ?');
   const insertCampus = db.prepare('INSERT INTO campus_identities (subject, account_id, campus_id, email) VALUES (?, ?, ?, ?)');
@@ -143,14 +143,16 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
     return Boolean(findAdmin.get());
   }
 
-  function withCampus(account) {
+  function withGoogleIdentity(account) {
     if (!account) return null;
     const identity = campusByAccount.get(account.id);
-    const regions = campusRegionNames(identity?.campusId);
+    const campusId = identity?.campusId || null;
+    const regions = campusRegionNames(campusId);
     return {
       ...account,
-      campusId: identity?.campusId ?? null,
-      campusEmail: identity?.campusEmail ?? null,
+      campusId,
+      campusEmail: campusId ? identity.googleEmail : null,
+      googleEmail: identity?.googleEmail ?? null,
       region: regions.includes(account.region) ? account.region : regions[0],
     };
   }
@@ -182,7 +184,7 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
   function current(req) {
     const hash = readSessionHash(req);
     const session = hash ? findActiveSession.get(hash, Date.now()) : null;
-    return session ? withCampus(findAccount.get(session.account_id)) : null;
+    return session ? withGoogleIdentity(findAccount.get(session.account_id)) : null;
   }
 
   async function createAccount(data, res, role) {
@@ -199,14 +201,14 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
       return { account: created, token: grantSession(created.id) };
     });
     sendCookie(res, token);
-    return withCampus(account);
+    return withGoogleIdentity(account);
   }
 
   function register(data, res) {
     return createAccount(data, res, 'student');
   }
 
-  async function login(data, res, requireCampusLogin = false) {
+  async function login(data, res, requireGoogleLogin = false) {
     const email = normalizeEmail(data?.email);
     if (!email || !validPassword(data?.password)) fail(401, '電子信箱或密碼不正確。');
     const credentials = findCredentials.get(email);
@@ -215,10 +217,10 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
     if (!matches || !credentials) fail(401, '電子信箱或密碼不正確。');
 
     const { account, token } = transaction(() => {
-      const activeAccount = withCampus(findUnchangedAccount.get(credentials.id, credentials.password_hash));
+      const activeAccount = withGoogleIdentity(findUnchangedAccount.get(credentials.id, credentials.password_hash));
       if (!activeAccount) fail(401, '電子信箱或密碼不正確。');
-      if (requireCampusLogin && activeAccount.role === 'student' && activeAccount.campusId) {
-        fail(403, '此帳號已連結學校，請使用校園帳號登入。');
+      if (requireGoogleLogin && activeAccount.role === 'student' && activeAccount.googleEmail) {
+        fail(403, '此帳號已連結 Google，請使用 Google 帳號登入。');
       }
       return { account: activeAccount, token: grantSession(activeAccount.id) };
     });
@@ -229,10 +231,11 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
   function campusSignIn({ intent, accountId, identity }, res) {
     const { subject, campusId, email } = identity;
     const campus = getCampus(campusId);
-    if (!campus) fail(403, '無法確認校園身分。');
+    if (campusId !== null && !campus) fail(403, '無法確認校園身分。');
+    const storedCampusId = campusId ?? '';
     const { account, token } = transaction(() => {
       const linked = campusBySubject.get(subject);
-      if (linked && linked.campusId !== campusId) fail(403, '無法確認校園身分。');
+      if (linked && linked.campusId !== storedCampusId) fail(403, '無法確認 Google 帳號。');
 
       let member;
       if (intent === 'link') {
@@ -240,25 +243,25 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
         if (member?.role !== 'student') fail(403, '請先登入原本的學生帳號。');
         const currentIdentity = campusByAccount.get(accountId);
         if ((linked && linked.accountId !== accountId) || (currentIdentity && currentIdentity.subject !== subject)) {
-          fail(409, '此校園身分已連結，請使用原本連結的帳號。');
+          fail(409, '此 Google 帳號已連結，請使用原本連結的帳號。');
         }
       } else if (linked) {
         member = findAccount.get(linked.accountId);
       } else {
-        const { name, department, region, subject: preferredSubject, style } = validatedProfile({ name: `${campus.shortName}同學` }, { campusId });
+        const { name, department, region, subject: preferredSubject, style } = validatedProfile({ name: campus ? `${campus.shortName}同學` : '共讀夥伴' }, { campusId });
         member = insertAccount.get(randomUUID(), email, name, department, region, preferredSubject, style, 'student', randomBytes(16), randomBytes(keySize), new Date().toISOString());
         if (!member) fail(409, '此信箱已有 StudyMate 帳號，請先登入舊帳號完成連結。');
       }
 
-      if (member?.role !== 'student') fail(403, '無法使用此校園身分登入。');
+      if (member?.role !== 'student') fail(403, '無法使用此 Google 帳號登入。');
       if (!linked) {
-        if (campusByEmail.get(email)) fail(409, '此校園信箱已連結其他帳號。');
+        if (campusByEmail.get(email)) fail(409, '此 Google 帳號已連結其他帳號。');
         const emailAccount = findCredentials.get(email);
-        if (emailAccount && emailAccount.id !== member.id) fail(409, '此校園信箱已對應另一個 StudyMate 帳號。');
-        insertCampus.run(subject, member.id, campusId, email);
+        if (emailAccount && emailAccount.id !== member.id) fail(409, '此信箱已對應另一個 StudyMate 帳號。');
+        insertCampus.run(subject, member.id, storedCampusId, email);
       }
       if (intent === 'link') deleteAccountSessions.run(member.id);
-      return { account: withCampus(member), token: grantSession(member.id) };
+      return { account: withGoogleIdentity(member), token: grantSession(member.id) };
     });
     sendCookie(res, token);
     return account;
@@ -302,7 +305,7 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
   function updateProfile(account, data) {
     if (!data || typeof data !== 'object' || Array.isArray(data)) fail(400, '請輸入有效的讀書偏好。');
     const { name, department, region, subject, style } = validatedProfile(data, account);
-    return withCampus(saveProfile.get(name, department, region, subject, style, account.id));
+    return withGoogleIdentity(saveProfile.get(name, department, region, subject, style, account.id));
   }
 
   function listAccounts() {

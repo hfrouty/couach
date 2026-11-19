@@ -18,6 +18,19 @@ function text(value, limit, message, optional = false) {
   return value.trim();
 }
 
+function invitationDetails(data, previousNote) {
+  return {
+    title: text(data?.title, 42, '邀約標題須介於 1 到 42 個字。'),
+    note: text(data?.note === undefined ? previousNote : data.note, 180, '共讀說明最多 180 個字。', true),
+  };
+}
+
+function invitationRegion(campus, mode, region) {
+  if (mode === 'online') return '';
+  if (!campus.regions.some(area => area.name === region)) fail(400, '請選擇此校園的有效區域。');
+  return region;
+}
+
 function dateValue(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)) return NaN;
   const time = Date.parse(value);
@@ -172,6 +185,7 @@ export function createRecords(db) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const getSession = db.prepare('SELECT * FROM study_sessions WHERE id = ?');
+  const editSession = db.prepare('UPDATE study_sessions SET title = ?, region = ?, note = ? WHERE id = ?');
   const findBlock = db.prepare(`
     SELECT 1 FROM study_blocks
     WHERE (blocker_id = :first AND blocked_id = :second)
@@ -274,18 +288,14 @@ export function createRecords(db) {
   }
 
   function publish(account, data) {
-    const title = text(data?.title, 42, '邀約標題須介於 1 到 42 個字。');
-    const note = text(data?.note, 180, '共讀說明最多 180 個字。', true);
+    const { title, note } = invitationDetails(data);
     const { subject, style, mode, capacity } = data;
     if (!SUBJECTS.includes(subject) || !STYLES.includes(style)) fail(400, '請選擇有效的科目和共讀習慣。');
     if (!['in-person', 'online'].includes(mode)) fail(400, '請選擇有效的共讀方式。');
     const campusId = data.campusId === undefined ? (account.campusId ?? DEFAULT_CAMPUS_ID) : data.campusId;
     const campus = typeof campusId === 'string' ? getCampus(campusId) : undefined;
     if (!campus) fail(400, '請選擇有效的邀約校園。');
-    const region = mode === 'online' ? '' : data.region;
-    if (mode === 'in-person' && !campus.regions.some(area => area.name === region)) {
-      fail(400, '請選擇此校園的有效區域。');
-    }
+    const region = invitationRegion(campus, mode, data.region);
     if (!Number.isInteger(capacity) || capacity < 2 || capacity > 6) fail(400, '共讀人數須介於 2 到 6 人。');
     const start = dateValue(data.start);
     const end = dateValue(data.end);
@@ -297,6 +307,19 @@ export function createRecords(db) {
     const id = randomUUID();
     insertSession.run(id, account.id, title, subject, style, mode, campus.id, region, capacity, start, end, note);
     return { id };
+  }
+
+  function edit(account, id, data) {
+    return transaction(db, () => {
+      const session = sessionById(id);
+      if (session.host_id !== account.id) fail(403, '只有發起人可以編輯邀約。');
+      if (session.closed_at !== null || session.ends_at <= Date.now()) fail(409, '這場邀約已結束，無法編輯。');
+      const { title, note } = invitationDetails(data, session.note);
+      const campus = getCampus(session.campus_id) ?? getCampus(DEFAULT_CAMPUS_ID);
+      const region = invitationRegion(campus, session.mode, data?.region);
+      editSession.run(title, region, note, id);
+      return { id };
+    });
   }
 
   function close(account, id) {
@@ -401,7 +424,7 @@ export function createRecords(db) {
   }
 
   return {
-    state, publish, close, requestJoin, setReservationStatus, report, block,
+    state, publish, edit, close, requestJoin, setReservationStatus, report, block,
     addFocus, moderation, resolveReport,
   };
 }

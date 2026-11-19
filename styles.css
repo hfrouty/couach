@@ -290,7 +290,21 @@ img { max-width: 100%; display: block; }
 .segmented button:hover:not([aria-pressed="true"]) { background: #f3f5ef; }
 .dot { display: inline-block; width: .44rem; height: .44rem; border-radius: 50%; background: #518941; flex: 0 0 auto; }
 
-.results-line { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: .85rem; margin-bottom: 10px; }
+.results-line { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .35rem .6rem; color: var(--muted); font-size: .85rem; margin-bottom: 10px; }
+.results-summary, .active-filters { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem .55rem; }
+.active-filters:empty { display: none; }
+.filter-chip {
+  min-height: 30px;
+  padding: .23rem .63rem;
+  border: 1px solid #d8e3cb;
+  border-radius: 999px;
+  background: #edf3e5;
+  color: #355139;
+  font-size: .82rem;
+  font-weight: 700;
+}
+.filter-chip:hover { background: #e3edd8; border-color: #b8cbaa; }
+.discovery .empty-state h3 + .button { margin-top: .75rem; }
 .sort-control, .select-wrap { display: inline-grid; align-items: center; }
 .sort-control > *, .select-wrap > * { grid-area: 1 / 1; }
 .sort-control select, .select-wrap select { appearance: none; padding-right: 1.45rem; }

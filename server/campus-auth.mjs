@@ -15,24 +15,38 @@ const GOOGLE_ISSUER = new URL('https://accounts.google.com');
 const CAMPUS_CALLBACK = '/api/auth/campus/callback';
 const FLOW_SECONDS = 10 * 60;
 const MAX_FLOWS = 2048;
-const invalidFlow = '登入連結已失效，請重新開始學校帳號登入。';
-const changedAccount = '登入帳號已變更，請重新開始學校帳號登入。';
+const invalidFlow = '登入連結已失效，請重新開始 Google 登入。';
+const changedAccount = '登入帳號已變更，請重新開始 Google 登入。';
 
 function fail(status, message) {
   throw Object.assign(new Error(message), { status });
 }
 
-export function schoolIdentityFromClaims(claims) {
+function verifiedGoogleAccount(claims) {
   const subject = claims?.sub;
   const email = normalizeEmail(claims?.email);
-  const hostedDomain = typeof claims?.hd === 'string' ? claims.hd.toLowerCase() : '';
-  const [local, domain] = email?.split('@') ?? [];
-  const campus = CAMPUSES.find(entry => entry.googleDomain === domain && entry.hostedDomains.includes(hostedDomain));
   if (typeof subject !== 'string' || subject.length === 0 || subject.length > 255 || /[^\x21-\x7e]/.test(subject)
-    || claims?.email_verified !== true || !campus || (campus.id === DEFAULT_CAMPUS_ID && !/^s\d+$/.test(local))) {
+    || claims?.email_verified !== true || !email) {
+    fail(403, '請使用已驗證的 Google 帳號登入。');
+  }
+  return { subject, email };
+}
+
+export function schoolIdentityFromClaims(claims) {
+  const { subject, email } = verifiedGoogleAccount(claims);
+  const hostedDomain = typeof claims?.hd === 'string' ? claims.hd.toLowerCase() : '';
+  const [local, domain] = email.split('@');
+  const campus = CAMPUSES.find(entry => entry.googleDomain === domain && entry.hostedDomains.includes(hostedDomain));
+  if (!campus || (campus.id === DEFAULT_CAMPUS_ID && !/^s\d+$/.test(local))) {
     fail(403, '請使用支援學校的 Google 校園帳號登入。');
   }
   return { subject, email, campusId: campus.id };
+}
+
+function personalIdentityFromClaims(claims) {
+  const { subject, email } = verifiedGoogleAccount(claims);
+  if (!email.endsWith('@gmail.com') || claims.hd !== undefined) fail(403, '請選擇一般 Gmail 帳號登入。');
+  return { subject, email, campusId: null };
 }
 
 export function createCampusAuth({ origin, clientId, clientSecret, secureCookies = true }) {
@@ -48,7 +62,7 @@ export function createCampusAuth({ origin, clientId, clientSecret, secureCookies
       timeout: 10,
     }).catch(() => {
       configuration = undefined;
-      fail(503, '暫時無法連線至學校帳號登入服務，請稍後再試。');
+      fail(503, '暫時無法連線至 Google 登入服務，請稍後再試。');
     });
     return configuration;
   }
@@ -69,12 +83,13 @@ export function createCampusAuth({ origin, clientId, clientSecret, secureCookies
     const url = new URL(request.url, origin);
     const intent = url.searchParams.get('intent') || 'signin';
     const selectedId = url.searchParams.get('campus');
+    const personal = selectedId === 'personal';
     const campus = getCampus(selectedId);
-    if (selectedId !== null && !campus) fail(400, '請選擇支援的學校。');
+    if (selectedId !== null && !campus && !personal) fail(400, '請選擇支援的 Google 帳號類型。');
     if (intent !== 'signin' && intent !== 'link') fail(400, invalidFlow);
     if (intent === 'link') {
       const site = request.headers['sec-fetch-site'];
-      if (site && site !== 'same-origin') fail(403, '請從 StudyMate 的帳號頁面完成學校帳號連結。');
+      if (site && site !== 'same-origin') fail(403, '請從 StudyMate 的帳號頁面完成 Google 帳號連結。');
       if (account?.role !== 'student' || account.id !== url.searchParams.get('account')) fail(409, changedAccount);
     } else if (account) {
       fail(409, '若要切換帳號，請先登出 StudyMate。');
@@ -88,7 +103,7 @@ export function createCampusAuth({ origin, clientId, clientSecret, secureCookies
     const redirect = buildAuthorizationUrl(config, {
       redirect_uri: callback.href,
       scope: 'openid email',
-      hd: (campus ?? getCampus(DEFAULT_CAMPUS_ID)).googleDomain,
+      ...(personal ? {} : { hd: (campus ?? getCampus(DEFAULT_CAMPUS_ID)).googleDomain }),
       prompt: 'select_account',
       state,
       nonce,
@@ -101,8 +116,8 @@ export function createCampusAuth({ origin, clientId, clientSecret, secureCookies
       flows.delete(key);
     }
     flows.delete(readFlowCookie(request));
-    if (flows.size >= MAX_FLOWS) fail(429, '學校帳號登入目前較忙，請稍後再試。');
-    flows.set(state, { intent, accountId: account?.id ?? null, nonce, verifier, expiresAt: now + FLOW_SECONDS * 1000 });
+    if (flows.size >= MAX_FLOWS) fail(429, 'Google 登入目前較忙，請稍後再試。');
+    flows.set(state, { intent, personal, accountId: account?.id ?? null, nonce, verifier, expiresAt: now + FLOW_SECONDS * 1000 });
     writeFlowCookie(response, state);
     return redirect;
   }
@@ -119,7 +134,7 @@ export function createCampusAuth({ origin, clientId, clientSecret, secureCookies
     if ((account?.id ?? null) !== flow.accountId || (flow.intent === 'link' && account?.role !== 'student')) {
       fail(409, changedAccount);
     }
-    if (currentUrl.searchParams.has('error')) fail(400, '學校帳號登入未完成，請重試或選用另一個學校帳號。');
+    if (currentUrl.searchParams.has('error')) fail(400, 'Google 登入未完成，請重試或選用另一個帳號。');
 
     const config = await googleConfiguration();
     let claims;
@@ -131,9 +146,10 @@ export function createCampusAuth({ origin, clientId, clientSecret, secureCookies
       });
       claims = tokens.claims();
     } catch {
-      fail(401, '無法驗證學校帳號登入，請重新開始。');
+      fail(401, '無法驗證 Google 帳號登入，請重新開始。');
     }
-    return { intent: flow.intent, accountId: flow.accountId, identity: schoolIdentityFromClaims(claims) };
+    const identity = flow.personal ? personalIdentityFromClaims(claims) : schoolIdentityFromClaims(claims);
+    return { intent: flow.intent, accountId: flow.accountId, identity };
   }
 
   return { start, complete };

@@ -37,11 +37,11 @@ function regionButton(region, selectedRegion, count, marker = false) {
       data-latitude="${Number(latitude)}" data-longitude="${Number(longitude)}" tabindex="-1"
       aria-label="${name}，${count} 個邀約" title="${name}，${count} 個邀約">
       <span class="campus-map-pin-icon">${icon('pin')}</span>
-      <span>${label}</span>${count ? `<span class="campus-map-pin-count">${count}</span>` : ''}
+      <span>${label}</span><span class="campus-map-pin-count" data-map-region-count aria-hidden="true"${count ? '' : ' hidden'}>${count}</span>
     </button>`;
   }
   return `<button ${attrs} class="campus-region-button" aria-label="${name}，${count} 個邀約">
-    ${name}${count ? `<span class="campus-region-count" aria-hidden="true">${count}</span>` : ''}
+    ${name}<span class="campus-region-count" data-map-region-count aria-hidden="true"${count ? '' : ' hidden'}>${count}</span>
   </button>`;
 }
 
@@ -89,9 +89,19 @@ export function renderCampusMap({
   </section>`;
 }
 
-export function updateCampusMapSelection(root, selectedRegion = '') {
+export function updateCampusMapSelection(root, selectedRegion = '', invitations) {
+  const counts = invitations && invitationCounts(invitations);
   for (const button of root.querySelectorAll('[data-campus-map] [data-action="map-region"]')) {
-    button.setAttribute('aria-pressed', String(button.dataset.value === selectedRegion));
+    const region = button.dataset.value;
+    button.setAttribute('aria-pressed', String(region === selectedRegion));
+    const badge = button.querySelector('[data-map-region-count]');
+    if (!counts || !badge) continue;
+    const count = counts.get(region) ?? 0;
+    badge.textContent = String(count);
+    badge.hidden = count === 0;
+    const label = `${region}，${count} 個邀約`;
+    button.setAttribute('aria-label', label);
+    if (button.hasAttribute('title')) button.title = label;
   }
 }
 

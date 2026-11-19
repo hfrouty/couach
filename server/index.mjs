@@ -195,7 +195,7 @@ export function createStudyServer({
     if (method === 'GET' && route === '/api/account') return { account, adminSetup, campusLogin: Boolean(campusAuth) };
     if (method === 'POST' && ['/api/auth/register', '/api/auth/login', '/api/auth/setup'].includes(route)) {
       const action = route.split('/').at(-1);
-      if (campusAuth && action === 'register') fail(403, '請使用支援學校的校園帳號加入 StudyMate。');
+      if (campusAuth && action === 'register') fail(403, '請使用 Google 帳號加入 StudyMate。');
       const authenticated = await performAuth(request, action, data => accounts[action](data, response, Boolean(campusAuth)));
       return { account: authenticated };
     }
@@ -208,8 +208,8 @@ export function createStudyServer({
       return { account: null };
     }
     if (!account) fail(401, '請先登入 StudyMate。');
-    if (campusAuth && account.role === 'student' && !account.campusId && (route === '/api/study' || route.startsWith('/api/study/'))) {
-      fail(403, '請先連結校園 Google 帳號。');
+    if (campusAuth && account.role === 'student' && !account.googleEmail && (route === '/api/study' || route.startsWith('/api/study/'))) {
+      fail(403, '請先連結 Google 帳號。');
     }
     if (method === 'PATCH' && route === '/api/profile') {
       return { account: await accounts.updateProfile(account, await readJson(request)) };
@@ -231,10 +231,11 @@ export function createStudyServer({
     } else if (route === '/api/study/focus') {
       records.addFocus(account, await readJson(request));
     } else {
-      const session = route.match(/^\/api\/study\/sessions\/([a-z0-9-]+)\/(close|join|report|block)$/);
+      const session = route.match(/^\/api\/study\/sessions\/([a-z0-9-]+)\/(edit|close|join|report|block)$/);
       const reservation = route.match(/^\/api\/study\/reservations\/([a-z0-9-]+)$/);
       if (session) {
         const [, id, action] = session;
+        if (action === 'edit') records.edit(account, id, await readJson(request));
         if (action === 'close') records.close(account, id);
         if (action === 'join') records.requestJoin(account, id);
         if (action === 'report') records.report(account, id, (await readJson(request)).reason);
