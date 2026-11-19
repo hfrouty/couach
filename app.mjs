@@ -38,28 +38,35 @@ function emptyState() {
 
 async function api(path, { method = 'GET', data } = {}) {
   const accountId = state.account?.id;
+  const scoped = path === '/study' || path.startsWith('/study/') || path === '/profile' || path === '/auth/logout';
   let response;
   try {
     response = await fetch(`/api${path}`, {
       method,
       credentials: 'same-origin',
-      ...(method === 'GET' ? {} : {
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data ?? {}),
-      }),
+      headers: {
+        ...(method === 'GET' ? {} : { 'Content-Type': 'application/json' }),
+        ...(scoped && accountId ? { 'X-StudyMate-Account': accountId } : {}),
+      },
+      ...(method === 'GET' ? {} : { body: JSON.stringify(data ?? {}) }),
     });
   } catch {
     throw new Error('無法連線，請檢查網路後再試。');
   }
   const payload = await response.json().catch(() => null);
   if (response.ok) return payload;
-  if (response.status === 401 && accountId && state.account?.id === accountId) {
+  const message = typeof payload?.error === 'string' ? payload.error : '暫時無法完成操作，請稍後再試。';
+  const accountChanged = scoped && response.status === 409 && payload?.code === 'ACCOUNT_CHANGED';
+  if ((response.status === 401 || accountChanged) && accountId && state.account?.id === accountId) {
     resetAccount();
+    if (accountChanged) loadError = message;
     if (dialog.open) dialog.close();
+    dialog.replaceChildren();
     render();
-    toast('登入已過期，請重新登入。');
+    if (accountChanged) app.querySelector('main').focus({ preventScroll: true });
+    else toast('登入已過期，請重新登入。');
   }
-  throw new Error(typeof payload?.error === 'string' ? payload.error : '暫時無法完成操作，請稍後再試。');
+  throw Object.assign(new Error(message), { code: accountChanged ? 'ACCOUNT_CHANGED' : undefined });
 }
 
 function timerKey(id) {
@@ -268,7 +275,7 @@ function renderAuth() {
       <section class="account-main" aria-label="StudyMate 帳號">
         ${loading ? '<div class="account-card"><p class="account-loading" role="status">正在連線…</p></div>' : loadError ? `
           <div class="account-card">
-            <h2>無法連線</h2><p class="account-description">${escape(loadError)}</p>
+            <h2>請重新連線</h2><p class="account-description">${escape(loadError)}</p>
             ${button('重新連線', 'retry-bootstrap', { variant: 'primary' })}
           </div>` : `
           <div class="account-card">
@@ -404,12 +411,16 @@ function sessionFacts(session, distance) {
     </ul>`;
 }
 
+function isOwnSession(session) {
+  return Boolean(state.account && session.hostId === state.account.id);
+}
+
 function renderCard({ session, score, distance }) {
   const live = isLive(session);
   return `
     <article class="session-card">
       <div class="card-top"><span class="status-pill ${live ? 'status-live' : 'status-later'}"><span class="dot"></span>${live ? '正在揪團' : '開放預約'}</span>
-        ${session.own ? '<span class="score">我的邀約</span>' : `<span class="score" title="參考科目、讀書習慣、時段與概略區域">${icon('spark')} ${score}% 媒合度</span>`}
+        ${isOwnSession(session) ? '<span class="score">我的邀約</span>' : `<span class="score" title="參考科目、讀書習慣、時段與概略區域">${icon('spark')} ${score}% 媒合度</span>`}
       </div>
       <h3>${escape(session.title)}</h3>
       <div class="tags"><span>${escape(session.subject)}</span><span>${escape(session.style)}</span><span>${session.format === 'pair' ? '一對一' : '小團體'}</span></div>
@@ -425,7 +436,7 @@ const statusLabels = { pending: '等待對方確認', confirmed: '已確認', co
 
 function renderPlans() {
   const reservations = Object.values(state.reservations).sort((a, b) => b.updatedAt - a.updatedAt);
-  const own = state.sessions.filter(session => session.own);
+  const own = state.sessions.filter(isOwnSession);
   const incoming = state.incoming.slice().sort((a, b) => b.updatedAt - a.updatedAt);
   return `
     <header class="tool-heading heading-with-action">
@@ -536,7 +547,7 @@ function showPublish() {
         <label class="field" hidden><span>開始時間（台灣時間）</span><input name="start" type="datetime-local" min="${earliest}" value="${suggested}" disabled></label>
       </div>
       <label class="field"><span>共讀說明（選填）</span><textarea name="note" rows="2" maxlength="180" placeholder="說明想一起讀什麼。"></textarea></label>
-      <p class="form-note">${icon('shield')} 實體邀約僅顯示概略校園區域。</p>
+      <p class="form-note" data-campus-privacy>${icon('shield')} 實體邀約僅顯示概略校園區域。</p>
       <p class="account-error" data-request-error role="alert" hidden></p>
       <button class="button button-primary" type="submit">${icon('plus')} 發布邀約</button>
     </form>`);
@@ -550,7 +561,8 @@ function showDetails(id) {
   const session = getSession(id);
   if (!session) return;
   const reservation = state.reservations[id];
-  const canJoin = !session.own && !hasEnded(session) && !session.closed && session.joined < session.capacity && (!reservation || reservation.status === 'cancelled');
+  const own = isOwnSession(session);
+  const canJoin = !own && !hasEnded(session) && !session.closed && session.joined < session.capacity && (!reservation || reservation.status === 'cancelled');
   showDialog(escape(session.title), `
     <div class="detail-content">
       <div class="host">${avatar(session.initials, session.avatarColor)}<span><strong>${escape(session.host)}</strong><small>${escape(session.department)}</small></span></div>
@@ -558,18 +570,18 @@ function showDetails(id) {
       ${sessionFacts(session)}
       <p class="detail-capacity">${icon('users')} ${session.joined}／${session.capacity} 人</p>
       ${session.note ? `<p class="detail-note">${escape(session.note)}</p>` : ''}
-      ${canJoin ? `<form data-form="join" data-id="${escape(id)}" class="dialog-form">
+      ${own ? '<p class="form-note">這是你發起的邀約。</p><a class="button button-secondary" href="#plans" data-view="plans">管理邀約</a>' : canJoin ? `<form data-form="join" data-id="${escape(id)}" class="dialog-form">
         <label class="check-field"><input type="checkbox" name="agree" required> 我確認可以參加這個時段。</label>
         <p class="account-error" data-request-error role="alert" hidden></p>
         <button class="button button-primary" type="submit">送出加入申請</button>
-      </form>` : reservation ? `<a class="button button-secondary" href="#plans" data-view="plans">${statusLabels[reservation.status]}・查看我的預約</a>` : `<p class="form-note">${session.own ? '這是你發起的邀約。' : '這個邀約目前無法加入。'}</p>`}
-      ${session.own ? '' : `<div class="detail-safety">${button('檢舉', 'report', { glyph: 'flag', variant: 'text', attrs: `data-id="${escape(id)}"` })}${button('封鎖夥伴', 'block', { variant: 'text', attrs: `data-id="${escape(id)}"` })}</div>`}
+      </form>` : reservation ? `<a class="button button-secondary" href="#plans" data-view="plans">${statusLabels[reservation.status]}・查看我的預約</a>` : '<p class="form-note">這個邀約目前無法加入。</p>'}
+      ${own ? '' : `<div class="detail-safety">${button('檢舉', 'report', { glyph: 'flag', variant: 'text', attrs: `data-id="${escape(id)}"` })}${button('封鎖夥伴', 'block', { variant: 'text', attrs: `data-id="${escape(id)}"` })}</div>`}
     </div>`);
 }
 
 function showSafety(id, action) {
   const session = getSession(id);
-  if (!session || session.own) return;
+  if (!session || isOwnSession(session)) return;
   const report = action === 'report';
   showDialog(report ? '檢舉邀約' : '封鎖夥伴', `
     <form class="dialog-form" data-form="${action}" data-id="${escape(id)}">
@@ -629,6 +641,7 @@ async function runRequest(control, execute, errorNode) {
   try {
     await execute();
   } catch (error) {
+    if (error.code === 'ACCOUNT_CHANGED' && !state.account) return;
     if (errorNode?.isConnected && !errorNode.closest('dialog:not([open])')) {
       errorNode.textContent = error.message;
       errorNode.hidden = false;
@@ -772,9 +785,11 @@ document.addEventListener('change', event => {
   }
   if (target.form?.dataset.form !== 'publish') return;
   if (target.name === 'mode') {
+    const online = target.value === 'online';
     const region = target.form.elements.namedItem('region');
-    region.disabled = target.value === 'online';
-    region.closest('.field').hidden = region.disabled;
+    region.disabled = online;
+    region.closest('.field').hidden = online;
+    target.form.querySelector('[data-campus-privacy]').hidden = online;
   }
   if (target.name === 'schedule') {
     const start = target.form.elements.namedItem('start');
@@ -862,6 +877,10 @@ window.addEventListener('hashchange', () => {
   render();
   window.scrollTo(0, 0);
   void updateViewData();
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !activeRequest && !loading) void updateViewData();
 });
 
 void bootstrap();

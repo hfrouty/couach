@@ -35,8 +35,8 @@ const authLimits = {
   password: { ip: 8 },
 };
 
-function fail(status, message) {
-  throw Object.assign(new Error(message), { status });
+function fail(status, message, code) {
+  throw Object.assign(new Error(message), { status, code });
 }
 
 function throttle(seconds) {
@@ -171,6 +171,10 @@ export function createStudyServer({
       const authenticated = await performAuth(request, action, data => accounts[action](data, response));
       return { account: authenticated };
     }
+    const expectedAccount = request.headers['x-studymate-account'];
+    if (account && expectedAccount !== undefined && expectedAccount !== account.id) {
+      fail(409, '瀏覽器的登入帳號已切換。重新連線後，請在「我的帳號」確認電子郵件。', 'ACCOUNT_CHANGED');
+    }
     if (method === 'POST' && route === '/api/auth/logout') {
       await accounts.logout(request, response);
       return { account: null };
@@ -237,7 +241,10 @@ export function createStudyServer({
       const status = Number.isInteger(error.status) ? error.status : 500;
       if (status >= 500 && status !== 503) console.error(error);
       if (error.retryAfter) response.setHeader('Retry-After', String(error.retryAfter));
-      return sendJson(response, status, { error: status === 500 ? '暫時無法處理，請稍後再試。' : error.message });
+      return sendJson(response, status, {
+        error: status === 500 ? '暫時無法處理，請稍後再試。' : error.message,
+        ...(error.code === 'ACCOUNT_CHANGED' ? { code: error.code } : {}),
+      });
     }
   });
   server.on('close', () => db.close());
