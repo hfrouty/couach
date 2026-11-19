@@ -1,8 +1,9 @@
 import { icon } from './icons.mjs';
 import { isLive, scoreSession } from './matching.mjs';
-import { SCHOOL, REGIONS, SUBJECTS, STYLES, DEPARTMENTS, PLACES } from './sample-data.mjs';
+import { SUBJECTS, STYLES, DEPARTMENTS, PLACES } from './sample-data.mjs';
 import { createStudyTools } from './study-tools.mjs';
-import { bindCampusMap, DEFAULT_MAP_CAMPUS, renderCampusMap, updateCampusMapSelection } from './campus-map.mjs';
+import { bindCampusMap, renderCampusMap, updateCampusMapSelection } from './campus-map.mjs';
+import { CAMPUSES, DEFAULT_CAMPUS_ID, campusRegionNames, getCampus } from './campuses.mjs';
 
 const app = document.querySelector('#app');
 const dialog = document.querySelector('#dialog');
@@ -22,6 +23,7 @@ let view = activeView();
 let authMode = 'login';
 let campusLogin = false;
 let legacyLogin = false;
+let selectedCampusId = DEFAULT_CAMPUS_ID;
 let loading = true;
 let loadError = '';
 let adminSetup = false;
@@ -34,11 +36,10 @@ const navigation = [
   ['focus', 'timer', '專注計時'],
   ['places', 'pin', '讀書空間'],
 ];
-const campusMaps = new Map([['ncnu', DEFAULT_MAP_CAMPUS]]);
 let campusNotice = '';
 const entryUrl = new URL(window.location.href);
 const campusNotices = new Map([
-  ['school', '請選擇暨大學生的 Google 校園帳號。'],
+  ['school', '請選擇支援學校的 Google 校園帳號。'],
   ['link', '這個信箱可能已有 StudyMate 帳號，請先用舊帳密登入，再連結校園帳號。'],
   ['account', '校園帳號未能連結，請確認目前登入的 StudyMate 帳號後重試。'],
   ['failed', '校園帳號登入未完成，請重新開始。'],
@@ -112,6 +113,7 @@ function saveTimer() {
 
 function bindAccount(account) {
   state = { ...emptyState(), account, ...restoreTimer(account.id) };
+  selectedCampusId = account.campusId ?? rememberedCampus(account.id);
   filters = { ...initialFilters };
   loadError = '';
 }
@@ -120,6 +122,7 @@ function resetAccount() {
   state = emptyState();
   authMode = 'login';
   legacyLogin = false;
+  selectedCampusId = DEFAULT_CAMPUS_ID;
   studyVersion++;
   loadError = '';
 }
@@ -128,8 +131,45 @@ function needsCampusLink() {
   return Boolean(campusLogin && state.account?.role === 'student' && !state.account.campusId);
 }
 
-function signedInCampus() {
-  return campusMaps.get(state.account?.campusId) ?? DEFAULT_MAP_CAMPUS;
+function rememberedCampus(accountId) {
+  try {
+    return getCampus(localStorage.getItem(`studymate:campus:${accountId}`))?.id ?? DEFAULT_CAMPUS_ID;
+  } catch {
+    return DEFAULT_CAMPUS_ID;
+  }
+}
+
+function activeCampus() {
+  return getCampus(selectedCampusId) ?? getCampus(DEFAULT_CAMPUS_ID);
+}
+
+function switchCampus(id) {
+  if (!getCampus(id) || id === selectedCampusId) return;
+  selectedCampusId = id;
+  filters.region = '';
+  if (!state.account.campusId) {
+    try {
+      localStorage.setItem(`studymate:campus:${state.account.id}`, id);
+    } catch {
+      // The campus selector still works when browser storage is restricted.
+    }
+  }
+  render();
+  app.querySelector('#campus-select')?.focus({ preventScroll: true });
+}
+
+function sessionsAtCampus() {
+  return state.sessions.filter(session => (session.campusId ?? DEFAULT_CAMPUS_ID) === selectedCampusId);
+}
+
+function placesAtCampus() {
+  const campus = activeCampus();
+  const places = campus.id === DEFAULT_CAMPUS_ID ? PLACES : campus.regions.filter(region => region.placeType).map(region => ({
+    name: region.label, region: region.name, type: region.placeType,
+    note: '選擇公共區域共讀，並先確認場館的開放時間與使用規定。',
+    mapQuery: `${campus.name} ${region.label}`,
+  }));
+  return { campusName: campus.name, places };
 }
 
 function mergeStudy(study) {
@@ -204,7 +244,7 @@ function toast(message) {
   toastTimeout = setTimeout(() => toastNode.classList.remove('visible'), 3600);
 }
 
-const studyTools = createStudyTools({ read: () => state, save: saveFocus, icons: icon, toast, places: PLACES, escape });
+const studyTools = createStudyTools({ read: () => state, save: saveFocus, icons: icon, toast, places: placesAtCampus, escape });
 
 function activeView() {
   const hash = window.location.hash.slice(1);
@@ -250,7 +290,7 @@ function renderShell(content) {
       </nav>
       <div class="sidebar-campus">
         <span class="sidebar-campus-icon">${icon('shield')}</span>
-        <div><strong>暨大校園</strong><small>位置僅顯示校園區域</small></div>
+        <div><strong>${escape(activeCampus().shortName)}校園</strong><small>位置僅顯示校園區域</small></div>
       </div>
     </aside>
     <div class="workspace">
@@ -259,7 +299,7 @@ function renderShell(content) {
           <img src="./assets/icon.svg" width="36" height="36" alt="">
           <strong>StudyMate<span>.</span></strong>
         </a>
-        <span class="campus-label">${icon('pin')} ${escape(signedInCampus().name)}</span>
+        <span class="campus-label">${icon('pin')} ${escape(activeCampus().name)}</span>
         <div class="top-actions">
           ${state.account.role === 'admin' ? '<a class="button button-text admin-link" href="/admin">管理後台</a>' : ''}
           <button type="button" class="profile-trigger" data-action="profile" aria-label="我的帳號">${avatar(Array.from(state.account.name)[0])}<span>${escape(state.account.name)}</span>${icon('chevron')}</button>
@@ -300,18 +340,27 @@ function campusEntry() {
   if (needsCampusLink()) {
     const account = state.account;
     return `<h2>連結學校帳號</h2>
-      <p class="account-description">連結後會開啟暨大周邊地圖，原本的邀約與預約會留在此帳號。</p>
+      <p class="account-description">連結後會開啟你的校園地圖，原本的邀約與預約會留在此帳號。</p>
       <p class="account-email campus-linked-account">${escape(account.email)}</p>
       ${notice}
-      <a class="button button-primary account-submit" href="/api/auth/campus/start?intent=link&amp;account=${encodeURIComponent(account.id)}">${icon('shield')} 連結暨大 Google 帳號</a>
+      ${campusAuthForm(account)}
       <div class="account-switch">${button('登出', 'logout', { variant: 'text' })}</div>`;
   }
   return `<h2>使用學校帳號登入</h2>
-    <p class="account-description">使用暨大學生 Google 帳號，登入後直接開啟校園周邊地圖。</p>
+    <p class="account-description">使用學校的 Google 帳號，登入後直接開啟所屬校園的地圖。</p>
     ${notice}
-    <a class="button button-primary account-submit" href="/api/auth/campus/start">${icon('shield')} 使用暨大 Google 帳號登入</a>
+    ${campusAuthForm()}
     <div class="account-switch">${button(legacyLogin ? '收起舊帳號表單' : '連結舊 StudyMate 帳號', 'legacy-auth', { variant: 'text' })}</div>
     ${legacyLogin ? passwordEntry(false, '登入並連結校園帳號') : ''}`;
+}
+
+function campusAuthForm(account) {
+  const schools = CAMPUSES.map(campus => [campus.id, campus.name]);
+  return `<form class="dialog-form account-form" method="get" action="/api/auth/campus/start">
+    ${account ? `<input type="hidden" name="intent" value="link"><input type="hidden" name="account" value="${escape(account.id)}">` : ''}
+    ${selectField('campus', '選擇學校', schools, DEFAULT_CAMPUS_ID)}
+    <button class="button button-primary account-submit" type="submit">${icon('shield')} ${account ? '連結 Google 校園帳號' : '使用 Google 校園帳號登入'}</button>
+  </form>`;
 }
 
 function renderAuth() {
@@ -324,7 +373,7 @@ function renderAuth() {
           <span><strong>StudyMate<span>.</span></strong><small>校園共讀</small></span>
         </div>
         <div class="account-welcome-copy">
-          <p class="hero-campus">${icon('book')} ${SCHOOL}</p>
+          <p class="hero-campus">${icon('book')} 校園共讀</p>
           <h1 id="welcome-heading">找個夥伴，<br><em>一起把書讀完。</em></h1>
           <p>在校園找人共讀、預約時段，累積你的學習紀錄。</p>
         </div>
@@ -352,11 +401,14 @@ function renderExplore() {
   const results = matchingSessions();
   const pending = Object.values(state.reservations).filter(item => item.status === 'pending' && !hasEnded(item.session)).length;
   const upcoming = Object.values(state.reservations).filter(item => item.status === 'confirmed' && !hasEnded(item.session)).length;
+  const publish = button('發起邀約', 'publish', { glyph: 'plus', variant: 'primary' });
+  const campusSelector = `<label class="field campus-map-picker"><span>切換校園</span>
+    <span class="select-wrap"><select id="campus-select" aria-label="切換校園">${selectOptions(CAMPUSES.map(campus => [campus.id, campus.shortName]), selectedCampusId)}</select>${icon('chevron')}</span>
+  </label>`;
   return `
     ${renderCampusMap({
-      campus: signedInCampus(), selectedRegion: filters.region, invitations: state.sessions,
-      actions: button('即時找夥伴', 'find-now', { glyph: 'bolt', variant: 'secondary' })
-        + button('發起邀約', 'publish', { glyph: 'plus', variant: 'primary' }),
+      campus: activeCampus(), selectedRegion: filters.region, invitations: sessionsAtCampus(),
+      actions: campusSelector + button('即時找夥伴', 'find-now', { glyph: 'bolt', variant: 'secondary' }) + publish,
     })}
     <div class="dashboard-grid">
       <section class="discovery" aria-labelledby="discovery-title">
@@ -397,11 +449,12 @@ function hasEnded(session, now = Date.now()) {
 
 function matchingSessions() {
   const now = Date.now();
-  const preferences = { ...state.account, start: now, end: now + 90 * minute };
+  const nearHome = (state.account.campusId ?? DEFAULT_CAMPUS_ID) === selectedCampusId;
+  const preferences = { ...state.account, region: nearHome ? state.account.region : '', start: now, end: now + 90 * minute };
   for (const key of ['region', 'subject', 'style']) {
     if (filters[key]) preferences[key] = filters[key];
   }
-  return state.sessions.filter(session => (
+  return sessionsAtCampus().filter(session => (
     !session.closed && !hasEnded(session, now)
     && (!filters.subject || session.subject === filters.subject)
     && (!filters.mode || session.mode === filters.mode)
@@ -421,9 +474,9 @@ function matchingSessions() {
 function renderResults(results) {
   return results.length ? results.map(renderCard).join('') : `
     <div class="empty-state"><span class="tile-icon">${icon('search')}</span>
-    ${state.sessions.some(session => !session.closed && !hasEnded(session))
+    ${sessionsAtCampus().some(session => !session.closed && !hasEnded(session))
       ? `<h3>目前沒有符合條件的邀約</h3><p>可以放寬條件，或自己發起共讀。</p>${button('清除篩選', 'reset-filters')}`
-      : `<h3>目前沒有共讀邀約</h3><p>選個時段和讀書方式，讓其他人可以加入。</p>${button('發起第一場邀約', 'publish', { glyph: 'plus', variant: 'primary' })}`}
+      : `<h3>這個校園目前沒有共讀邀約</h3><p>發布一場共讀，讓附近的讀書夥伴找到你。</p>${button('發起第一場邀約', 'publish', { glyph: 'plus', variant: 'primary' })}`}
     </div>`;
 }
 
@@ -453,8 +506,10 @@ function formatSlot(session) {
   return `${prefix} ${timeFormat.format(start)}–${endDay}${timeFormat.format(end)}`;
 }
 
-function sessionFacts(session, distance) {
-  const where = session.mode === 'online' ? '線上共讀' : session.region;
+function sessionFacts(session, distance, showCampus = false) {
+  const campus = showCampus ? getCampus(session.campusId ?? DEFAULT_CAMPUS_ID)?.shortName : '';
+  const place = session.mode === 'online' ? '線上共讀' : session.region;
+  const where = campus ? `${campus} · ${place}` : place;
   const details = distance === 0 ? ' · 同一區域' : distance ? ` · 約 ${distance} 公尺` : '';
   return `
     <ul class="session-facts">
@@ -504,7 +559,7 @@ function renderPlans() {
           const expired = hasEnded(session);
           return `<article class="plan-item">
             <span class="status-pill ${status === 'confirmed' ? 'status-live' : 'status-later'}">${status === 'pending' && expired ? '邀約已結束' : statusLabels[status]}</span>
-            <h3>${escape(session.title)}</h3>${sessionFacts(session)}
+            <h3>${escape(session.title)}</h3>${sessionFacts(session, null, true)}
             <div class="plan-actions">
               ${status === 'confirmed' && Date.now() >= Date.parse(session.start) ? button('標記完成', 'complete', { glyph: 'check', variant: 'primary', attrs }) : ''}
               ${(status === 'pending' || status === 'confirmed') && !expired ? button('取消預約', 'cancel', { attrs }) : ''}
@@ -516,7 +571,7 @@ function renderPlans() {
         <h2 id="own-heading">${icon('book')} 我發起的邀約</h2>
         ${own.length ? own.map(session => `
           <article class="plan-item"><span class="status-pill ${session.closed || hasEnded(session) ? 'status-later' : 'status-live'}">${session.closed ? '已關閉' : hasEnded(session) ? '已結束' : '招募中'}</span>
-            <h3>${escape(session.title)}</h3>${sessionFacts(session)}
+            <h3>${escape(session.title)}</h3>${sessionFacts(session, null, true)}
             ${session.closed || hasEnded(session) ? '' : button('關閉邀約', 'close-invite', { attrs: `data-id="${escape(session.id)}"` })}
           </article>`).join('') : '<p class="empty-state">你目前還沒有發起任何邀約。</p>'}
         ${button('發起邀約', 'publish', { glyph: 'plus', variant: 'primary' })}
@@ -556,7 +611,7 @@ function showProfile() {
       ${p.campusEmail ? `<div class="field"><span>已連結的校園帳號</span><p class="field-value account-email">${escape(p.campusEmail)}</p></div>` : ''}
       <div class="field-grid">
         ${selectField('department', '科系', DEPARTMENTS, p.department)}
-        ${selectField('region', '所在區域', REGIONS, p.region)}
+        ${selectField('region', '所在區域', campusRegionNames(p.campusId), p.region)}
         ${selectField('subject', '常讀科目', SUBJECTS, p.subject)}
         ${selectField('style', '共讀習慣', STYLES, p.style)}
       </div>
@@ -572,7 +627,7 @@ function showFilters() {
       <div class="field-grid">
         ${selectField('subject', '科目', SUBJECTS, filters.subject, '所有科目')}
         ${selectField('mode', '共讀方式', [['in-person', '實體'], ['online', '線上']], filters.mode, '不限方式')}
-        ${selectField('region', '校園區域', REGIONS, filters.region, '所有區域')}
+        ${selectField('region', '校園區域', campusRegionNames(selectedCampusId), filters.region, '所有區域')}
         ${selectField('style', '共讀習慣', STYLES, filters.style, '不限習慣')}
         ${selectField('department', '科系', DEPARTMENTS, filters.department, '所有科系')}
       </div>
@@ -586,14 +641,16 @@ function showPublish() {
   const earliest = new Date(taipeiEpoch).toISOString().slice(0, 16);
   const suggested = new Date(taipeiEpoch + 30 * minute).toISOString().slice(0, 16);
   const p = state.account;
+  const campus = activeCampus();
+  const homeRegion = (p.campusId ?? DEFAULT_CAMPUS_ID) === campus.id ? p.region : campus.regions[0].name;
   showDialog('發起讀書邀約', `
-    <form data-form="publish" class="dialog-form">
+    <form data-form="publish" data-campus-id="${escape(campus.id)}" class="dialog-form">
       <label class="field"><span>邀約標題</span><input name="title" required maxlength="42" placeholder="例如：圖書館一起複習微積分"></label>
       <div class="field-grid">
         ${selectField('subject', '科目', SUBJECTS, p.subject)}
         ${selectField('style', '共讀習慣', STYLES, p.style)}
         ${selectField('mode', '共讀方式', [['in-person', '實體'], ['online', '線上']], 'in-person')}
-        ${selectField('region', '校園區域', REGIONS, p.region)}
+        ${selectField('region', '校園區域', campusRegionNames(campus.id), homeRegion)}
         ${selectField('capacity', '人數上限', [['2', '2 人（一對一）'], ['3', '3 人'], ['4', '4 人'], ['5', '5 人'], ['6', '6 人']], '2')}
         ${selectField('duration', '共讀長度', [['25', '25 分鐘'], ['50', '50 分鐘'], ['60', '60 分鐘'], ['90', '90 分鐘'], ['120', '120 分鐘']], '60')}
         ${selectField('schedule', '開始方式', [['now', '現在開始'], ['later', '預約時間']], 'now')}
@@ -603,7 +660,7 @@ function showPublish() {
       <p class="form-note" data-campus-privacy>${icon('shield')} 實體邀約僅顯示概略校園區域。</p>
       <p class="account-error" data-request-error role="alert" hidden></p>
       <button class="button button-primary" type="submit">${icon('plus')} 發布邀約</button>
-    </form>`);
+    </form>`, `${escape(campus.name)} · ${escape(campus.area)}`);
 }
 
 function getSession(id) {
@@ -662,7 +719,7 @@ async function handlePublish(form, data) {
   }
   const mode = data.get('mode');
   const session = {
-    title, mode, region: mode === 'online' ? '' : data.get('region'),
+    title, mode, campusId: form.dataset.campusId, region: mode === 'online' ? '' : data.get('region'),
     subject: data.get('subject'), style: data.get('style'),
     capacity: Number(data.get('capacity')),
     start: new Date(start).toISOString(), end: new Date(start + Number(data.get('duration')) * minute).toISOString(),
@@ -851,6 +908,11 @@ document.addEventListener('input', event => {
 
 document.addEventListener('change', event => {
   const { target } = event;
+  if (target.id === 'campus-select') {
+    if (!activeRequest) switchCampus(target.value);
+    else target.value = selectedCampusId;
+    return;
+  }
   if (target.id === 'sort') {
     filters.sort = target.value;
     refreshResults();

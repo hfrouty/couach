@@ -1,4 +1,5 @@
 import { icon } from './icons.mjs';
+import { DEFAULT_CAMPUS_ID, getCampus } from './campuses.mjs';
 
 const tileSize = 256;
 const minZoom = 13;
@@ -7,18 +8,7 @@ const minLatitude = -85.05112878;
 const maxLatitude = 85.05112878;
 const tileSource = 'https://tile.openstreetmap.org';
 
-export const DEFAULT_MAP_CAMPUS = {
-  name: '國立暨南國際大學',
-  center: [23.95165, 120.92715],
-  zoom: 16,
-  regions: [
-    { name: '圖書館周邊', label: '圖書館', position: [23.9517, 120.9262] },
-    { name: '人文學院周邊', label: '人文學院', position: [23.9501, 120.9292] },
-    { name: '科技學院周邊', label: '科技學院', position: [23.9545, 120.9277] },
-    { name: '管理學院周邊', label: '管理學院', position: [23.9521, 120.9278] },
-    { name: '學生宿舍周邊', label: '學生宿舍', position: [23.9489, 120.9252] },
-  ],
-};
+export const DEFAULT_MAP_CAMPUS = getCampus(DEFAULT_CAMPUS_ID);
 
 function escape(value) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({
@@ -64,7 +54,7 @@ export function renderCampusMap({
   return `<section class="campus-map" aria-labelledby="campus-map-title" data-campus-map>
     <header class="campus-map-header">
       <div>
-        <p class="campus-map-school">${icon('pin')} ${name}</p>
+        <p class="campus-map-school">${icon('pin')} ${name}${campus.area ? ` · ${escape(campus.area)}` : ''}</p>
         <h1 id="campus-map-title">校園共讀地圖</h1>
         <p class="campus-map-instructions">點選區域標記，查看附近的共讀邀約。</p>
       </div>

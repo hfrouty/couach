@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { REGIONS, SCHOOL, STYLES, SUBJECTS } from '../sample-data.mjs';
+import { STYLES, SUBJECTS } from '../sample-data.mjs';
+import { DEFAULT_CAMPUS_ID, getCampus } from '../campuses.mjs';
 
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
@@ -27,10 +28,12 @@ function dateValue(value) {
 
 function sessionData(row, viewerId) {
   const hostIndex = row.host_id.charCodeAt(0) % COLORS.length;
+  const campus = getCampus(row.campus_id) ?? getCampus(DEFAULT_CAMPUS_ID);
   return {
     id: row.id,
     title: row.title,
-    school: SCHOOL,
+    campusId: campus.id,
+    school: campus.name,
     department: row.department,
     region: row.region,
     subject: row.subject,
@@ -72,6 +75,7 @@ export function createRecords(db) {
       subject TEXT NOT NULL,
       style TEXT NOT NULL,
       mode TEXT NOT NULL CHECK (mode IN ('in-person', 'online')),
+      campus_id TEXT NOT NULL DEFAULT 'ncnu',
       region TEXT NOT NULL,
       capacity INTEGER NOT NULL CHECK (capacity BETWEEN 2 AND 6),
       starts_at INTEGER NOT NULL,
@@ -122,6 +126,14 @@ export function createRecords(db) {
     ) STRICT;
   `);
 
+  // Invites created before campus selection were all assigned to NCNU.
+  transaction(db, () => {
+    const columns = db.prepare('PRAGMA table_info(study_sessions)').all();
+    if (!columns.some(column => column.name === 'campus_id')) {
+      db.exec("ALTER TABLE study_sessions ADD COLUMN campus_id TEXT NOT NULL DEFAULT 'ncnu'");
+    }
+  });
+
   const sessionColumns = `
     s.*, host.name AS host, host.department,
     (SELECT COUNT(*) FROM reservations
@@ -156,8 +168,8 @@ export function createRecords(db) {
   `);
   const focusEntries = db.prepare('SELECT minutes, at FROM focus_entries WHERE account_id = ? ORDER BY at');
   const insertSession = db.prepare(`
-    INSERT INTO study_sessions (id, host_id, title, subject, style, mode, region, capacity, starts_at, ends_at, note)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO study_sessions (id, host_id, title, subject, style, mode, campus_id, region, capacity, starts_at, ends_at, note)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const getSession = db.prepare('SELECT * FROM study_sessions WHERE id = ?');
   const findBlock = db.prepare(`
@@ -267,8 +279,13 @@ export function createRecords(db) {
     const { subject, style, mode, capacity } = data;
     if (!SUBJECTS.includes(subject) || !STYLES.includes(style)) fail(400, '請選擇有效的科目和共讀習慣。');
     if (!['in-person', 'online'].includes(mode)) fail(400, '請選擇有效的共讀方式。');
+    const campusId = data.campusId === undefined ? (account.campusId ?? DEFAULT_CAMPUS_ID) : data.campusId;
+    const campus = typeof campusId === 'string' ? getCampus(campusId) : undefined;
+    if (!campus) fail(400, '請選擇有效的邀約校園。');
     const region = mode === 'online' ? '' : data.region;
-    if (mode === 'in-person' && !REGIONS.includes(region)) fail(400, '請選擇有效的校園區域。');
+    if (mode === 'in-person' && !campus.regions.some(area => area.name === region)) {
+      fail(400, '請選擇此校園的有效區域。');
+    }
     if (!Number.isInteger(capacity) || capacity < 2 || capacity > 6) fail(400, '共讀人數須介於 2 到 6 人。');
     const start = dateValue(data.start);
     const end = dateValue(data.end);
@@ -278,7 +295,7 @@ export function createRecords(db) {
     }
 
     const id = randomUUID();
-    insertSession.run(id, account.id, title, subject, style, mode, region, capacity, start, end, note);
+    insertSession.run(id, account.id, title, subject, style, mode, campus.id, region, capacity, start, end, note);
     return { id };
   }
 

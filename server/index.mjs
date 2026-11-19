@@ -22,7 +22,7 @@ const publicFiles = new Map([
   ['/admin', 'admin.html'],
   ['/admin/', 'admin.html'],
   ...[
-    'app.mjs', 'admin.mjs', 'campus-map.mjs', 'matching.mjs', 'sample-data.mjs', 'study-tools.mjs', 'icons.mjs',
+    'app.mjs', 'admin.mjs', 'campus-map.mjs', 'campuses.mjs', 'matching.mjs', 'sample-data.mjs', 'study-tools.mjs', 'icons.mjs',
     'styles.css', 'tools.css', 'account.css', 'admin.css', 'campus-map.css',
     'assets/icon.svg', 'assets/library-study.webp',
   ].map(name => [`/${name}`, name]),
@@ -195,7 +195,7 @@ export function createStudyServer({
     if (method === 'GET' && route === '/api/account') return { account, adminSetup, campusLogin: Boolean(campusAuth) };
     if (method === 'POST' && ['/api/auth/register', '/api/auth/login', '/api/auth/setup'].includes(route)) {
       const action = route.split('/').at(-1);
-      if (campusAuth && action === 'register') fail(403, '請使用暨大學生帳號加入 StudyMate。');
+      if (campusAuth && action === 'register') fail(403, '請使用支援學校的校園帳號加入 StudyMate。');
       const authenticated = await performAuth(request, action, data => accounts[action](data, response, Boolean(campusAuth)));
       return { account: authenticated };
     }
@@ -209,7 +209,7 @@ export function createStudyServer({
     }
     if (!account) fail(401, '請先登入 StudyMate。');
     if (campusAuth && account.role === 'student' && !account.campusId && (route === '/api/study' || route.startsWith('/api/study/'))) {
-      fail(403, '請先連結暨大學生帳號。');
+      fail(403, '請先連結校園 Google 帳號。');
     }
     if (method === 'PATCH' && route === '/api/profile') {
       return { account: await accounts.updateProfile(account, await readJson(request)) };

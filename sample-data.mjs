@@ -1,6 +1,7 @@
-export const SCHOOL = "國立暨南國際大學";
+import { DEFAULT_CAMPUS_ID, campusRegionNames, getCampus } from './campuses.mjs';
 
-export const REGIONS = ["圖書館周邊", "人文學院周邊", "科技學院周邊", "管理學院周邊", "學生宿舍周邊"];
+export const SCHOOL = getCampus(DEFAULT_CAMPUS_ID).name;
+export const REGIONS = campusRegionNames(DEFAULT_CAMPUS_ID);
 export const SUBJECTS = ["微積分", "英文", "程式設計", "統計學", "經濟學", "日文", "其他"];
 export const STYLES = ["安靜自習", "討論解題", "互相督促"];
 export const DEPARTMENTS = [

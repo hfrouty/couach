@@ -8,11 +8,11 @@ import {
   randomPKCECodeVerifier,
   randomState,
 } from 'openid-client';
+import { CAMPUSES, DEFAULT_CAMPUS_ID, getCampus } from '../campuses.mjs';
+import { normalizeEmail } from './accounts.mjs';
 
 const GOOGLE_ISSUER = new URL('https://accounts.google.com');
 const CAMPUS_CALLBACK = '/api/auth/campus/callback';
-const STUDENT_DOMAIN = 'mail1.ncnu.edu.tw';
-const NCNU_HOSTED_DOMAINS = new Set(['ncnu.edu.tw', STUDENT_DOMAIN]);
 const FLOW_SECONDS = 10 * 60;
 const MAX_FLOWS = 2048;
 const invalidFlow = '登入連結已失效，請重新開始學校帳號登入。';
@@ -24,14 +24,15 @@ function fail(status, message) {
 
 export function schoolIdentityFromClaims(claims) {
   const subject = claims?.sub;
-  const email = typeof claims?.email === 'string' ? claims.email.toLowerCase() : '';
+  const email = normalizeEmail(claims?.email);
   const hostedDomain = typeof claims?.hd === 'string' ? claims.hd.toLowerCase() : '';
+  const [local, domain] = email?.split('@') ?? [];
+  const campus = CAMPUSES.find(entry => entry.googleDomain === domain && entry.hostedDomains.includes(hostedDomain));
   if (typeof subject !== 'string' || subject.length === 0 || subject.length > 255 || /[^\x21-\x7e]/.test(subject)
-    || claims.email_verified !== true || !NCNU_HOSTED_DOMAINS.has(hostedDomain)
-    || email.length > 254 || !/^s\d+@mail1\.ncnu\.edu\.tw$/.test(email)) {
-    fail(403, '請使用國立暨南國際大學的學生 Google 校園帳號登入。');
+    || claims?.email_verified !== true || !campus || (campus.id === DEFAULT_CAMPUS_ID && !/^s\d+$/.test(local))) {
+    fail(403, '請使用支援學校的 Google 校園帳號登入。');
   }
-  return { subject, email, campusId: 'ncnu' };
+  return { subject, email, campusId: campus.id };
 }
 
 export function createCampusAuth({ origin, clientId, clientSecret, secureCookies = true }) {
@@ -67,6 +68,9 @@ export function createCampusAuth({ origin, clientId, clientSecret, secureCookies
   async function start(request, response, account) {
     const url = new URL(request.url, origin);
     const intent = url.searchParams.get('intent') || 'signin';
+    const selectedId = url.searchParams.get('campus');
+    const campus = getCampus(selectedId);
+    if (selectedId !== null && !campus) fail(400, '請選擇支援的學校。');
     if (intent !== 'signin' && intent !== 'link') fail(400, invalidFlow);
     if (intent === 'link') {
       const site = request.headers['sec-fetch-site'];
@@ -84,7 +88,7 @@ export function createCampusAuth({ origin, clientId, clientSecret, secureCookies
     const redirect = buildAuthorizationUrl(config, {
       redirect_uri: callback.href,
       scope: 'openid email',
-      hd: STUDENT_DOMAIN,
+      hd: (campus ?? getCampus(DEFAULT_CAMPUS_ID)).googleDomain,
       prompt: 'select_account',
       state,
       nonce,

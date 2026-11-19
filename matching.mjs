@@ -1,11 +1,4 @@
-// Approximate offsets in meters for demo campus areas. No coordinates are collected.
-const areaOffsets = new Map([
-  ["圖書館周邊", [0, 0]],
-  ["人文學院周邊", [-250, 150]],
-  ["科技學院周邊", [400, 250]],
-  ["管理學院周邊", [150, -450]],
-  ["學生宿舍周邊", [-550, -450]],
-]);
+import { DEFAULT_CAMPUS_ID, getCampus } from './campuses.mjs';
 
 const relatedSubjects = [
   ["微積分", "統計學", "經濟學"],
@@ -29,13 +22,18 @@ function timeOverlap(session, preferences) {
 }
 
 function distanceBetween(session, preferredRegion) {
-  if (session.mode === "online") return null;
+  if (session.mode === "online" || !preferredRegion) return null;
 
-  const preferred = areaOffsets.get(preferredRegion);
-  const actual = areaOffsets.get(session.region);
+  const campus = getCampus(session.campusId ?? DEFAULT_CAMPUS_ID);
+  const preferred = campus?.regions.find(region => region.name === preferredRegion)?.position;
+  const actual = campus?.regions.find(region => region.name === session.region)?.position;
   if (!preferred || !actual) return null;
 
-  return Math.round(Math.hypot(preferred[0] - actual[0], preferred[1] - actual[1]) / 50) * 50;
+  // Estimate the straight-line distance between public area markers.
+  const latitude = (preferred[0] + actual[0]) * Math.PI / 360;
+  const north = (preferred[0] - actual[0]) * 111_320;
+  const east = (preferred[1] - actual[1]) * 111_320 * Math.cos(latitude);
+  return Math.round(Math.hypot(north, east) / 50) * 50;
 }
 
 function locationFit(session, preferredRegion, distance) {

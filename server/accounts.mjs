@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { DEPARTMENTS, REGIONS, STYLES, SUBJECTS } from '../sample-data.mjs';
+import { DEPARTMENTS, STYLES, SUBJECTS } from '../sample-data.mjs';
+import { campusRegionNames, getCampus } from '../campuses.mjs';
 
 const deriveKey = promisify(scrypt);
 const keySize = 64;
@@ -8,7 +9,7 @@ const passwordCost = { N: 32_768, r: 8, p: 3, maxmem: 64 * 1024 * 1024 };
 const dummySalt = randomBytes(16);
 const dummyKey = randomBytes(keySize);
 const sessionLifetime = 7 * 24 * 60 * 60;
-const profileOptions = { department: DEPARTMENTS, region: REGIONS, subject: SUBJECTS, style: STYLES };
+const profileOptions = { department: DEPARTMENTS, subject: SUBJECTS, style: STYLES };
 const publicFields = 'id, email, name, department, region, subject, style, role, created_at AS createdAt';
 
 function fail(status, message) {
@@ -47,7 +48,7 @@ function validatedProfile(data, current = {}) {
   }
 
   const profile = { name: name.trim() };
-  for (const [key, options] of Object.entries(profileOptions)) {
+  for (const [key, options] of Object.entries({ ...profileOptions, region: campusRegionNames(current.campusId) })) {
     const value = data[key] === undefined ? (current[key] ?? options[0]) : data[key];
     if (!options.includes(value)) fail(400, '請從清單選擇有效的讀書偏好。');
     profile[key] = value;
@@ -145,7 +146,13 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
   function withCampus(account) {
     if (!account) return null;
     const identity = campusByAccount.get(account.id);
-    return { ...account, campusId: identity?.campusId ?? null, campusEmail: identity?.campusEmail ?? null };
+    const regions = campusRegionNames(identity?.campusId);
+    return {
+      ...account,
+      campusId: identity?.campusId ?? null,
+      campusEmail: identity?.campusEmail ?? null,
+      region: regions.includes(account.region) ? account.region : regions[0],
+    };
   }
 
   function grantSession(accountId) {
@@ -221,6 +228,8 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
 
   function campusSignIn({ intent, accountId, identity }, res) {
     const { subject, campusId, email } = identity;
+    const campus = getCampus(campusId);
+    if (!campus) fail(403, '無法確認校園身分。');
     const { account, token } = transaction(() => {
       const linked = campusBySubject.get(subject);
       if (linked && linked.campusId !== campusId) fail(403, '無法確認校園身分。');
@@ -236,7 +245,7 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
       } else if (linked) {
         member = findAccount.get(linked.accountId);
       } else {
-        const { name, department, region, subject: preferredSubject, style } = validatedProfile({ name: '暨大同學' });
+        const { name, department, region, subject: preferredSubject, style } = validatedProfile({ name: `${campus.shortName}同學` }, { campusId });
         member = insertAccount.get(randomUUID(), email, name, department, region, preferredSubject, style, 'student', randomBytes(16), randomBytes(keySize), new Date().toISOString());
         if (!member) fail(409, '此信箱已有 StudyMate 帳號，請先登入舊帳號完成連結。');
       }

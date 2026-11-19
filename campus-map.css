@@ -36,9 +36,11 @@
 .campus-map-actions {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-end;
   gap: .55rem;
 }
+
+.campus-map-picker { min-width: 7.3rem; }
 
 .campus-map-viewport {
   position: relative;

@@ -1,6 +1,6 @@
 # StudyMate 校園共讀
 
-以國立暨南國際大學為示範校園的讀書夥伴媒合網站，可在手機和桌面上使用。
+校園讀書夥伴媒合網站，可在手機和桌面上使用。支援暨大、台大、成大、彰師大和高大。
 
 ## 本機啟動
 
@@ -8,14 +8,14 @@
 
 ## 使用流程
 
-- 登入後首先開啟校園地圖。點選圖書館、學院或宿舍周邊的圖釘，可篩選該公共區域的邀約；地圖以 OpenStreetMap 為底圖。
+- 登入後首先開啟校園地圖。使用「切換校園」改看各校地圖和邀約，再點選區域圖釘進一步篩選。邀約會發布到表單上顯示的校園。地圖以 OpenStreetMap 為底圖。
 - 啟用校園登入後，學生使用學校的 Google 帳號登入。既有學生可用舊 StudyMate 帳號進行一次連結，保留原有資料。如果部署尚未設定校園登入，會提供原有的信箱與密碼登入。
 - 使用「即時找夥伴」查看正在招募的邀約，或選擇「可預約」瀏覽未來的邀約。也可以依科目、科系、區域、共讀方式與習慣篩選。
 - 查看邀約並送出加入申請。主揪可在「我的預約」確認申請，參加者可以取消或於開始後標記為完成。
 - 使用「發起邀約」建立實體或線上共讀，可選擇現在開始、預約時間、一對一或小團體。
 - 使用「專注計時」啟動番茄鐘並累積專注紀錄，或透過「讀書空間」查看校園地點。
 
-媒合度依照時段重疊 35%、區域距離 25%、科目關聯 20% 和共讀習慣 20% 計算。區域距離使用示範區域偏移量估算，網站不要求 GPS 權限。
+媒合度依照時段重疊 35%、區域距離 25%、科目關聯 20% 和共讀習慣 20% 計算。區域距離以同一校園的公共標記估算，網站不要求 GPS 權限。每校的地圖中心、區域標記與驗證網域集中在 `campuses.mjs`。
 
 密碼以獨立 salt 加上 scrypt 儲存。帳號、邀約、預約、已完成的專注紀錄、檢舉與封鎖儲存在伺服器，並依照帳號權限讀取。配對卡片只顯示主揪暱稱、科系和選擇的概略校園區域。
 
@@ -31,7 +31,15 @@
 
 ### 啟用校園登入
 
-目前支援國立暨南國際大學學生的 Google 校園帳號 `s學號@mail1.ncnu.edu.tw`。此驗證確認校園 Google 帳號身分。學籍狀態須由學校另外確認。[暨大計算機與網路中心](https://cc.ncnu.edu.tw/p/412-1001-1059.php?Lang=zh-tw)
+登入後預設前往已驗證帳號所屬的校園。Google 驗證確認帳號歸屬，實際學籍須由學校確認。
+
+| 學校 | 地圖預設區域 | Google 校園帳號網域 |
+| --- | --- | --- |
+| 暨大 | 埔里校園 | [`mail1.ncnu.edu.tw`](https://cc.ncnu.edu.tw/p/412-1001-1059.php?Lang=zh-tw)，學生帳號 |
+| 台大 | 校總區 | [`g.ntu.edu.tw`](https://www.cc.ntu.edu.tw/chinese/services/serv_i06.asp) |
+| 成大 | 光復與成功校區 | [`gs.ncku.edu.tw`](https://cc.ncku.edu.tw/p/412-1213-29107.php?Lang=zh-tw) |
+| 彰師大 | 進德校區 | [`gm.ncue.edu.tw`](https://www.ncue.edu.tw/p/404-1000-28748.php?Lang=zh-tw) |
+| 高大 | 楠梓校園 | [`mail.nuk.edu.tw`](https://lic.nuk.edu.tw/p/406-1012-1423%2Cr21.php?Lang=zh-tw) |
 
 1. 在 Google Cloud 建立「網頁應用程式」OAuth 用戶端，完成 Google 所需的同意畫面和網域設定。[Google OpenID Connect 文件](https://developers.google.com/identity/openid-connect/openid-connect)
 2. 將 `https://couach-production.up.railway.app/api/auth/campus/callback` 加到授權的重新導向 URI。若改用自訂網域，請把 URI 和 Railway 的 `STUDYMATE_PUBLIC_ORIGIN` 一起改成該正式網域。

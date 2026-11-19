@@ -91,13 +91,16 @@ export function createStudyTools({ read, save, icons, toast, places, escape }) {
   }
 
   function renderPlaces() {
+    const { campusName, places: campusPlaces } = typeof places === 'function'
+      ? places()
+      : { campusName: '暨大校園', places };
     return `
       <header class="tool-heading">
         <h1>讀書空間</h1>
-        <p>探索暨大校園周邊適合共讀的公共空間。</p>
+        <p>探索${escape(campusName)}周邊適合共讀的公共空間。</p>
       </header>
-      <div class="tool-grid place-grid">
-        ${places.map(({ name, region, type, note, mapQuery }) => `
+      ${campusPlaces.length ? `<div class="tool-grid place-grid">
+        ${campusPlaces.map(({ name, region, type, note, mapQuery }) => `
           <article class="tool-panel place-card">
             <div class="place-visual" aria-hidden="true">
               ${icons(type.includes('咖啡') ? 'cup' : 'library')}
@@ -116,7 +119,8 @@ export function createStudyTools({ read, save, icons, toast, places, escape }) {
           </article>
         `).join('')}
       </div>
-      <p class="places-note">空間為示範參考，開放時間與使用規定請以場館公告為準。</p>
+      <p class="places-note">空間為示範參考，開放時間與使用規定請以場館公告為準。</p>`
+      : '<p class="empty-state">這個校園的讀書空間還在整理中。</p>'}
     `;
   }
 
