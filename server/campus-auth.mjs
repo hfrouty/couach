@@ -83,9 +83,10 @@ export function createCampusAuth({ origin, clientId, clientSecret, secureCookies
     const url = new URL(request.url, origin);
     const intent = url.searchParams.get('intent') || 'signin';
     const selectedId = url.searchParams.get('campus');
+    const automatic = selectedId === 'any';
     const personal = selectedId === 'personal';
     const campus = getCampus(selectedId);
-    if (selectedId !== null && !campus && !personal) fail(400, '請選擇支援的 Google 帳號類型。');
+    if (selectedId !== null && !campus && !personal && !automatic) fail(400, '請選擇支援的 Google 帳號類型。');
     if (intent !== 'signin' && intent !== 'link') fail(400, invalidFlow);
     if (intent === 'link') {
       const site = request.headers['sec-fetch-site'];
@@ -103,7 +104,7 @@ export function createCampusAuth({ origin, clientId, clientSecret, secureCookies
     const redirect = buildAuthorizationUrl(config, {
       redirect_uri: callback.href,
       scope: 'openid email',
-      ...(personal ? {} : { hd: (campus ?? getCampus(DEFAULT_CAMPUS_ID)).googleDomain }),
+      ...(personal || automatic ? {} : { hd: (campus ?? getCampus(DEFAULT_CAMPUS_ID)).googleDomain }),
       prompt: 'select_account',
       state,
       nonce,
@@ -117,7 +118,9 @@ export function createCampusAuth({ origin, clientId, clientSecret, secureCookies
     }
     flows.delete(readFlowCookie(request));
     if (flows.size >= MAX_FLOWS) fail(429, 'Google 登入目前較忙，請稍後再試。');
-    flows.set(state, { intent, personal, accountId: account?.id ?? null, nonce, verifier, expiresAt: now + FLOW_SECONDS * 1000 });
+    flows.set(state, {
+      intent, selectedId, accountId: account?.id ?? null, nonce, verifier, expiresAt: now + FLOW_SECONDS * 1000,
+    });
     writeFlowCookie(response, state);
     return redirect;
   }
@@ -148,7 +151,8 @@ export function createCampusAuth({ origin, clientId, clientSecret, secureCookies
     } catch {
       fail(401, '無法驗證 Google 帳號登入，請重新開始。');
     }
-    const identity = flow.personal ? personalIdentityFromClaims(claims) : schoolIdentityFromClaims(claims);
+    const personal = flow.selectedId === 'personal' || (flow.selectedId === 'any' && claims?.hd === undefined);
+    const identity = personal ? personalIdentityFromClaims(claims) : schoolIdentityFromClaims(claims);
     return { intent: flow.intent, accountId: flow.accountId, identity };
   }
 

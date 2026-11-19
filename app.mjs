@@ -3,6 +3,7 @@ import { isLive, scoreSession } from './matching.mjs';
 import { SUBJECTS, STYLES, DEPARTMENTS, PLACES } from './sample-data.mjs';
 import { createStudyTools } from './study-tools.mjs';
 import { bindCampusMap, renderCampusMap, updateCampusMapSelection } from './campus-map.mjs';
+import { getCampusPlaces } from './campus-places.mjs';
 import { CAMPUSES, DEFAULT_CAMPUS_ID, campusRegionNames, getCampus } from './campuses.mjs';
 
 const app = document.querySelector('#app');
@@ -40,7 +41,7 @@ const navigation = [
 let campusNotice = '';
 const entryUrl = new URL(window.location.href);
 const campusNotices = new Map([
-  ['school', '請依所選類型使用一般 Gmail 或支援學校的 Google 帳號。'],
+  ['school', '請在 Google 選擇一般 Gmail 或支援學校的 Google 帳號。'],
   ['link', '這個信箱可能已有 StudyMate 帳號，請先用舊帳密登入，再連結 Google 帳號。'],
   ['account', 'Google 帳號未能連結，請確認目前登入的 StudyMate 帳號後重試。'],
   ['failed', 'Google 登入未完成，請重新開始。'],
@@ -347,7 +348,7 @@ function googleEntry() {
       ${googleAuthForm(account)}
       <div class="account-switch">${button('登出', 'logout', { variant: 'text' })}</div>`;
   }
-  return `<h2>使用 Google 帳號登入</h2>
+  return `<h2>歡迎來到 StudyMate</h2>
     <p class="account-description">一般 Gmail 可以登入後選擇校園，校園帳號會直接開啟所屬學校的地圖。</p>
     ${notice}
     ${googleAuthForm()}
@@ -356,11 +357,10 @@ function googleEntry() {
 }
 
 function googleAuthForm(account) {
-  const choices = [['personal', '一般 Gmail'], ...CAMPUSES.map(campus => [campus.id, campus.name])];
   return `<form class="dialog-form account-form" method="get" action="/api/auth/campus/start">
     ${account ? `<input type="hidden" name="intent" value="link"><input type="hidden" name="account" value="${escape(account.id)}">` : ''}
-    ${selectField('campus', 'Google 帳號類型', choices, 'personal')}
-    <button class="button button-primary account-submit" type="submit">${icon('shield')} ${account ? '連結 Google 帳號' : '使用 Google 帳號登入'}</button>
+    <input type="hidden" name="campus" value="any">
+    <button class="button button-primary account-submit" type="submit">${account ? '連結 Google 帳號' : '使用 Google 帳號登入'}</button>
   </form>`;
 }
 
@@ -388,7 +388,7 @@ function renderAuth() {
           <div class="account-card">
             ${campusLogin ? googleEntry() : `
             <h2>${register ? '建立共讀帳號' : '歡迎回來'}</h2>
-            <p class="account-description">${register ? '建立帳號後，就可以發起或加入共讀。' : '使用電子郵件登入 StudyMate。'}</p>
+            <p class="account-description">${register ? '建立帳號後，就可以發起或加入共讀。' : 'Google 登入尚未啟用，可先使用電子郵件登入。'}</p>
             ${campusNotice ? `<p class="account-error campus-entry-notice" role="alert">${escape(campusNotice)}</p>` : ''}
             ${passwordEntry(register, register ? '註冊並登入' : '登入')}
             <div class="account-switch"><span>${register ? '已經有帳號？' : '第一次使用？'}</span>${button(register ? '我要登入' : '建立帳號', 'auth-mode', { variant: 'text' })}</div>`}
@@ -400,6 +400,7 @@ function renderAuth() {
 
 function renderExplore() {
   const now = Date.now();
+  const campus = activeCampus();
   const results = matchingSessions(now);
   const pending = Object.values(state.reservations).filter(item => item.status === 'pending' && !hasEnded(item.session)).length;
   const upcoming = Object.values(state.reservations).filter(item => item.status === 'confirmed' && !hasEnded(item.session)).length;
@@ -409,7 +410,7 @@ function renderExplore() {
   </label>`;
   return `
     ${renderCampusMap({
-      campus: activeCampus(), selectedRegion: filters.region, invitations: mapInvitations(now),
+      campus, selectedRegion: filters.region, invitations: mapInvitations(now), places: getCampusPlaces(campus.id),
       actions: campusSelector + button('即時找夥伴', 'find-now', { glyph: 'bolt', variant: 'secondary' }) + publish,
     })}
     <div class="dashboard-grid">
