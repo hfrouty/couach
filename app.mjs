@@ -1,32 +1,30 @@
 import { icon } from './icons.mjs';
 import { isLive, scoreSession } from './matching.mjs';
-import { SCHOOL, REGIONS, SUBJECTS, STYLES, DEPARTMENTS, PLACES, makeSampleSessions } from './sample-data.mjs';
+import { SCHOOL, REGIONS, SUBJECTS, STYLES, DEPARTMENTS, PLACES } from './sample-data.mjs';
 import { createStudyTools } from './study-tools.mjs';
 
 const app = document.querySelector('#app');
 const dialog = document.querySelector('#dialog');
 const toastNode = document.querySelector('#toast');
-const storageKey = 'studymate:v1';
 const minute = 60_000;
 const timeZone = 'Asia/Taipei';
 const dayFormat = new Intl.DateTimeFormat('zh-TW', { timeZone, month: 'numeric', day: 'numeric' });
 const timeFormat = new Intl.DateTimeFormat('zh-TW', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 
-const defaultProfile = {
-  name: '', department: DEPARTMENTS[0], region: REGIONS[0], subject: SUBJECTS[0], style: STYLES[0],
-};
 const initialFilters = { timing: 'all', subject: '', mode: '', region: '', style: '', department: '', cross: false, sort: 'score' };
 
-let state = load();
+let state = emptyState();
 let filters = { ...initialFilters };
 let cleanup = () => {};
 let toastTimeout;
 let view = activeView();
-const demoStart = getDemoStart();
-const samples = makeSampleSessions(new Date(demoStart)).map(session => ({
-  ...session,
-  id: `${session.id}-${demoStart}`,
-}));
+let authMode = 'login';
+let loading = true;
+let loadError = '';
+let adminSetup = false;
+let activeRequest = false;
+let studyVersion = 0;
+let focusSync = null;
 const navigation = [
   ['explore', 'compass', '找讀書夥伴'],
   ['plans', 'calendar', '我的預約'],
@@ -34,34 +32,128 @@ const navigation = [
   ['places', 'pin', '讀書空間'],
 ];
 
-function load() {
-  let existing;
-  try {
-    existing = JSON.parse(localStorage.getItem(storageKey));
-  } catch {
-    existing = null;
-  }
-  return {
-    sessions: [], reservations: {}, blocked: [], reports: [], focusLog: [],
-    ...existing,
-    profile: { ...defaultProfile, ...existing?.profile },
-  };
+function emptyState() {
+  return { account: null, sessions: [], reservations: {}, incoming: [], focusLog: [], pendingFocus: [] };
 }
 
-function save(partial) {
+async function api(path, { method = 'GET', data } = {}) {
+  const accountId = state.account?.id;
+  let response;
+  try {
+    response = await fetch(`/api${path}`, {
+      method,
+      credentials: 'same-origin',
+      ...(method === 'GET' ? {} : {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data ?? {}),
+      }),
+    });
+  } catch {
+    throw new Error('無法連線，請檢查網路後再試。');
+  }
+  const payload = await response.json().catch(() => null);
+  if (response.ok) return payload;
+  if (response.status === 401 && accountId && state.account?.id === accountId) {
+    resetAccount();
+    if (dialog.open) dialog.close();
+    render();
+    toast('登入已過期，請重新登入。');
+  }
+  throw new Error(typeof payload?.error === 'string' ? payload.error : '暫時無法完成操作，請稍後再試。');
+}
+
+function timerKey(id) {
+  return `studymate:focus:${id}`;
+}
+
+function restoreTimer(id) {
+  try {
+    const local = JSON.parse(localStorage.getItem(timerKey(id)));
+    return { focus: local?.focus, pendingFocus: Array.isArray(local?.pendingFocus) ? local.pendingFocus : [] };
+  } catch {
+    return { pendingFocus: [] };
+  }
+}
+
+function saveTimer() {
+  if (!state.account) return;
+  try {
+    localStorage.setItem(timerKey(state.account.id), JSON.stringify({ focus: state.focus, pendingFocus: state.pendingFocus }));
+  } catch {
+    // The running timer remains usable when browser storage is restricted.
+  }
+}
+
+function bindAccount(account) {
+  state = { ...emptyState(), account, ...restoreTimer(account.id) };
+  filters = { ...initialFilters };
+  loadError = '';
+}
+
+function resetAccount() {
+  state = emptyState();
+  authMode = 'login';
+  studyVersion++;
+  loadError = '';
+}
+
+function mergeStudy(study) {
+  const focusLog = new Map([...state.focusLog, ...study.focusLog, ...state.pendingFocus].map(entry => [entry.at, entry]));
+  state = { ...state, ...study, focusLog: [...focusLog.values()].sort((a, b) => a.at.localeCompare(b.at)) };
+}
+
+async function refreshStudy() {
+  const accountId = state.account?.id;
+  if (!accountId) return false;
+  const version = ++studyVersion;
+  const study = await api('/study');
+  if (state.account?.id !== accountId || version !== studyVersion) return false;
+  mergeStudy(study);
+  loadError = '';
+  return true;
+}
+
+async function mutateStudy(path, data) {
+  const accountId = state.account?.id;
+  ++studyVersion;
+  const study = await api(path, { method: 'POST', data });
+  if (state.account?.id !== accountId) return false;
+  ++studyVersion;
+  mergeStudy(study);
+  return true;
+}
+
+function syncFocus() {
+  const accountId = state.account?.id;
+  if (!accountId || !state.pendingFocus.length || focusSync === accountId) return;
+  focusSync = accountId;
+  void flushFocus(accountId);
+}
+
+async function flushFocus(accountId) {
+  try {
+    while (state.account?.id === accountId && state.pendingFocus.length) {
+      const record = state.pendingFocus[0];
+      await api('/study/focus', { method: 'POST', data: record });
+      if (state.account?.id !== accountId) return;
+      state.pendingFocus = state.pendingFocus.filter(entry => entry.at !== record.at);
+      saveTimer();
+    }
+  } catch {
+    if (state.account?.id === accountId) toast('專注紀錄尚未同步，重新整理資料時會再試。');
+  } finally {
+    if (focusSync === accountId) focusSync = null;
+  }
+}
+
+function saveFocus(partial) {
+  if (partial.focusLog) {
+    const record = partial.focusLog.at(-1);
+    state.pendingFocus = [...state.pendingFocus, record];
+  }
   state = { ...state, ...partial };
-  try {
-    localStorage.setItem(storageKey, JSON.stringify(state));
-  } catch {
-    toast('瀏覽器目前無法儲存，資料會在關閉本頁後清除。');
-  }
-}
-
-function getDemoStart() {
-  const now = Date.now();
-  if (state.demoStart <= now && now - state.demoStart < 60 * minute) return state.demoStart;
-  save({ demoStart: now });
-  return now;
+  saveTimer();
+  syncFocus();
 }
 
 function escape(value) {
@@ -77,7 +169,7 @@ function toast(message) {
   toastTimeout = setTimeout(() => toastNode.classList.remove('visible'), 3600);
 }
 
-const studyTools = createStudyTools({ read: () => state, save, icons: icon, toast, places: PLACES, escape });
+const studyTools = createStudyTools({ read: () => state, save: saveFocus, icons: icon, toast, places: PLACES, escape });
 
 function activeView() {
   const hash = window.location.hash.slice(1);
@@ -123,7 +215,7 @@ function renderShell(content) {
       </nav>
       <div class="sidebar-campus">
         <span class="sidebar-campus-icon">${icon('shield')}</span>
-        <div><strong>暨大示範校園</strong><small>位置僅顯示校園區域</small></div>
+        <div><strong>暨大校園</strong><small>位置僅顯示校園區域</small></div>
       </div>
     </aside>
     <div class="workspace">
@@ -134,8 +226,8 @@ function renderShell(content) {
         </a>
         <span class="campus-label">${icon('pin')} ${SCHOOL}</span>
         <div class="top-actions">
-          <span class="demo-label">示範模式</span>
-          <button type="button" class="profile-trigger" data-action="profile" aria-label="我的偏好">${avatar(state.profile.name.slice(0, 1) || '訪')}<span>${escape(state.profile.name || '訪客')}</span>${icon('chevron')}</button>
+          ${state.account.role === 'admin' ? '<a class="button button-text admin-link" href="/admin">管理後台</a>' : ''}
+          <button type="button" class="profile-trigger" data-action="profile" aria-label="我的帳號">${avatar(Array.from(state.account.name)[0])}<span>${escape(state.account.name)}</span>${icon('chevron')}</button>
         </div>
       </header>
       <main id="main-content" class="main-content" tabindex="-1">${content}</main>
@@ -144,9 +236,56 @@ function renderShell(content) {
 
 function render() {
   cleanup();
+  cleanup = () => {};
+  if (loading || !state.account) {
+    app.innerHTML = renderAuth();
+    return;
+  }
+  if (loadError) {
+    app.innerHTML = renderShell(`<section class="empty-state"><h1>無法載入共讀資料</h1><p>${escape(loadError)}</p>${button('重新整理資料', 'refresh')}</section>`);
+    return;
+  }
   const content = view === 'explore' ? renderExplore() : view === 'plans' ? renderPlans() : studyTools.render(view);
   app.innerHTML = renderShell(content);
   cleanup = studyTools.bind(app.querySelector('main'), view);
+}
+
+function renderAuth() {
+  const register = authMode === 'register';
+  return `
+    <main class="account-layout" id="main-content" tabindex="-1">
+      <section class="account-welcome" aria-labelledby="welcome-heading">
+        <div class="account-brand">
+          <img src="./assets/icon.svg" width="46" height="46" alt="">
+          <span><strong>StudyMate<span>.</span></strong><small>校園共讀</small></span>
+        </div>
+        <div class="account-welcome-copy">
+          <p class="hero-campus">${icon('book')} ${SCHOOL}</p>
+          <h1 id="welcome-heading">找個夥伴，<br><em>一起把書讀完。</em></h1>
+          <p>在校園找人共讀、預約時段，累積你的學習紀錄。</p>
+        </div>
+      </section>
+      <section class="account-main" aria-label="StudyMate 帳號">
+        ${loading ? '<div class="account-card"><p class="account-loading" role="status">正在連線…</p></div>' : loadError ? `
+          <div class="account-card">
+            <h2>無法連線</h2><p class="account-description">${escape(loadError)}</p>
+            ${button('重新連線', 'retry-bootstrap', { variant: 'primary' })}
+          </div>` : `
+          <div class="account-card">
+            <h2>${register ? '建立共讀帳號' : '歡迎回來'}</h2>
+            <p class="account-description">${register ? '建立帳號後，就可以發起或加入共讀。' : '使用電子郵件登入 StudyMate。'}</p>
+            <form class="dialog-form account-form" data-auth="${register ? 'register' : 'login'}">
+              ${register ? '<label class="field"><span>暱稱</span><input name="name" autocomplete="nickname" maxlength="40" placeholder="共讀時顯示的名字" required></label>' : ''}
+              <label class="field"><span>電子郵件</span><input type="email" autocomplete="username" name="email" maxlength="254" placeholder="you@example.com" required></label>
+              <label class="field"><span>密碼</span><input type="password" name="password" autocomplete="${register ? 'new-password' : 'current-password'}" ${register ? 'minlength="8" placeholder="至少 8 個字元"' : ''} maxlength="128" required></label>
+              <p class="account-error" data-request-error role="alert" hidden></p>
+              <button class="button button-primary account-submit" type="submit">${register ? '註冊並登入' : '登入'}</button>
+            </form>
+            <div class="account-switch"><span>${register ? '已經有帳號？' : '第一次使用？'}</span>${button(register ? '我要登入' : '建立帳號', 'auth-mode', { variant: 'text' })}</div>
+            ${adminSetup ? '<a class="account-setup-link" href="/admin">管理員初始設定</a>' : ''}
+          </div>`}
+      </section>
+    </main>`;
 }
 
 function renderExplore() {
@@ -167,9 +306,10 @@ function renderExplore() {
     </section>
     <div class="dashboard-grid">
       <section class="discovery" aria-labelledby="discovery-title">
-        <header class="section-heading" id="discovery-heading">
-          <h2 id="discovery-title" tabindex="-1">探索讀書夥伴</h2>
-          <p>依照科目、時間和校園區域，找到適合你的共讀邀約。</p>
+        <header class="section-heading heading-with-action" id="discovery-heading">
+          <div><h2 id="discovery-title" tabindex="-1">探索讀書夥伴</h2>
+          <p>依照科目、時間和校園區域，找到適合你的共讀邀約。</p></div>
+          ${button('重新整理', 'refresh', { glyph: 'rotate', variant: 'text', attrs: 'aria-label="重新整理邀約"' })}
         </header>
         <div class="filter-bar">
           <div class="segmented" role="group" aria-label="依時段篩選">
@@ -203,18 +343,18 @@ function hasEnded(session, now = Date.now()) {
 
 function matchingSessions() {
   const now = Date.now();
-  const preferences = { ...state.profile, start: now, end: now + 90 * minute };
+  const preferences = { ...state.account, start: now, end: now + 90 * minute };
   for (const key of ['region', 'subject', 'style']) {
     if (filters[key]) preferences[key] = filters[key];
   }
-  return [...samples, ...state.sessions].filter(session => (
-    !session.closed && !hasEnded(session, now) && !state.blocked.includes(session.host)
+  return state.sessions.filter(session => (
+    !session.closed && !hasEnded(session, now)
     && (!filters.subject || session.subject === filters.subject)
     && (!filters.mode || session.mode === filters.mode)
     && (!filters.region || session.region === filters.region)
     && (!filters.style || session.style === filters.style)
     && (!filters.department || session.department === filters.department)
-    && (!filters.cross || session.department !== state.profile.department)
+    && (!filters.cross || session.department !== state.account.department)
     && (filters.timing !== 'now' || isLive(session, now))
     && (filters.timing !== 'later' || Date.parse(session.start) > now)
   )).map(session => ({ session, ...scoreSession(session, preferences) })).sort((a, b) => {
@@ -226,8 +366,11 @@ function matchingSessions() {
 
 function renderResults(results) {
   return results.length ? results.map(renderCard).join('') : `
-    <div class="empty-state"><span class="tile-icon">${icon('search')}</span><h3>目前沒有符合條件的邀約</h3>
-    <p>可以放寬篩選條件，或自己發起一場共讀。</p>${button('清除篩選', 'reset-filters')}</div>`;
+    <div class="empty-state"><span class="tile-icon">${icon('search')}</span>
+    ${state.sessions.some(session => !session.closed && !hasEnded(session))
+      ? `<h3>目前沒有符合條件的邀約</h3><p>可以放寬條件，或自己發起共讀。</p>${button('清除篩選', 'reset-filters')}`
+      : `<h3>目前沒有共讀邀約</h3><p>選個時段和讀書方式，讓其他人可以加入。</p>${button('發起第一場邀約', 'publish', { glyph: 'plus', variant: 'primary' })}`}
+    </div>`;
 }
 
 function refreshResults() {
@@ -282,33 +425,55 @@ const statusLabels = { pending: '等待對方確認', confirmed: '已確認', co
 
 function renderPlans() {
   const reservations = Object.values(state.reservations).sort((a, b) => b.updatedAt - a.updatedAt);
+  const own = state.sessions.filter(session => session.own);
+  const incoming = state.incoming.slice().sort((a, b) => b.updatedAt - a.updatedAt);
   return `
-    <header class="tool-heading"><h1>我的預約</h1><p>查看你的加入申請、已確認的共讀場次，以及自己發起的邀約。</p></header>
+    <header class="tool-heading heading-with-action">
+      <div><h1>我的預約</h1><p>查看加入申請、管理發起的邀約和共讀時段。</p></div>
+      ${button('重新整理', 'refresh', { glyph: 'rotate', variant: 'text', attrs: 'aria-label="重新整理預約"' })}
+    </header>
     <div class="plans-grid">
       <section class="tool-panel plan-list" aria-labelledby="reservation-heading">
         <h2 id="reservation-heading">${icon('calendar')} 我的共讀</h2>
         ${reservations.length ? reservations.map(item => {
-          const { session, status } = item;
+          const { id, session, status } = item;
+          const attrs = `data-id="${escape(id)}"`;
           const expired = hasEnded(session);
           return `<article class="plan-item">
             <span class="status-pill ${status === 'confirmed' ? 'status-live' : 'status-later'}">${status === 'pending' && expired ? '邀約已結束' : statusLabels[status]}</span>
             <h3>${escape(session.title)}</h3>${sessionFacts(session)}
             <div class="plan-actions">
-              ${status === 'pending' && !expired && session.isSample ? button('模擬對方確認', 'confirm', { variant: 'primary', attrs: `data-id="${escape(session.id)}"` }) : ''}
-              ${status === 'confirmed' && Date.now() >= Date.parse(session.start) ? button('標記完成', 'complete', { glyph: 'check', variant: 'primary', attrs: `data-id="${escape(session.id)}"` }) : ''}
-              ${(status === 'pending' || status === 'confirmed') && !expired ? button('取消預約', 'cancel', { attrs: `data-id="${escape(session.id)}"` }) : ''}
+              ${status === 'confirmed' && Date.now() >= Date.parse(session.start) ? button('標記完成', 'complete', { glyph: 'check', variant: 'primary', attrs }) : ''}
+              ${(status === 'pending' || status === 'confirmed') && !expired ? button('取消預約', 'cancel', { attrs }) : ''}
             </div>
           </article>`;
         }).join('') : '<p class="empty-state">加入一場邀約後，你可以在這裡查看進度。</p>'}
       </section>
       <section class="tool-panel plan-list" aria-labelledby="own-heading">
         <h2 id="own-heading">${icon('book')} 我發起的邀約</h2>
-        ${state.sessions.length ? state.sessions.map(session => `
+        ${own.length ? own.map(session => `
           <article class="plan-item"><span class="status-pill ${session.closed || hasEnded(session) ? 'status-later' : 'status-live'}">${session.closed ? '已關閉' : hasEnded(session) ? '已結束' : '招募中'}</span>
             <h3>${escape(session.title)}</h3>${sessionFacts(session)}
             ${session.closed || hasEnded(session) ? '' : button('關閉邀約', 'close-invite', { attrs: `data-id="${escape(session.id)}"` })}
           </article>`).join('') : '<p class="empty-state">你目前還沒有發起任何邀約。</p>'}
         ${button('發起邀約', 'publish', { glyph: 'plus', variant: 'primary' })}
+      </section>
+      <section class="tool-panel plan-list" aria-labelledby="incoming-heading">
+        <h2 id="incoming-heading">${icon('users')} 收到的申請</h2>
+        ${incoming.length ? incoming.map(item => {
+          const session = own.find(candidate => candidate.id === item.sessionId);
+          const open = session && !session.closed && !hasEnded(session);
+          const attrs = `data-id="${escape(item.id)}"`;
+          return `<article class="plan-item">
+            <span class="status-pill ${item.status === 'confirmed' ? 'status-live' : 'status-later'}">${item.status === 'pending' ? (open ? '待你確認' : '邀約已結束') : statusLabels[item.status]}</span>
+            <h3>${escape(item.title)}</h3><p class="incoming-name">${escape(item.name)}</p>
+            <div class="plan-actions">
+              ${open && item.status === 'pending' ? button('同意加入', 'confirm', { glyph: 'check', variant: 'primary', attrs }) : ''}
+              ${open && item.status === 'pending' ? button('婉拒', 'reject', { attrs }) : ''}
+              ${open && item.status === 'confirmed' ? button('取消共讀', 'cancel', { attrs }) : ''}
+            </div>
+          </article>`;
+        }).join('') : '<p class="empty-state">有人申請加入你的邀約時，會出現在這裡。</p>'}
       </section>
     </div>`;
 }
@@ -320,19 +485,21 @@ function showDialog(title, content, description = '') {
 }
 
 function showProfile() {
-  const p = state.profile;
-  showDialog('我的偏好', `
+  const p = state.account;
+  showDialog('我的帳號', `
     <form data-form="profile" class="dialog-form">
-      <label class="field"><span>暱稱</span><input name="name" maxlength="20" placeholder="訪客" value="${escape(p.name)}"></label>
-      <div class="field"><span>示範校園</span><p class="field-value">${SCHOOL}</p></div>
+      <label class="field"><span>暱稱</span><input name="name" maxlength="40" autocomplete="nickname" value="${escape(p.name)}" required></label>
+      <div class="field"><span>電子郵件</span><p class="field-value account-email">${escape(p.email)}</p></div>
       <div class="field-grid">
         ${selectField('department', '科系', DEPARTMENTS, p.department)}
         ${selectField('region', '所在區域', REGIONS, p.region)}
         ${selectField('subject', '常讀科目', SUBJECTS, p.subject)}
         ${selectField('style', '共讀習慣', STYLES, p.style)}
       </div>
-      <button class="button button-primary" type="submit">儲存偏好</button>
-    </form>`, '這些偏好會用於推薦邀約，並儲存在這個瀏覽器。');
+      <p class="account-error" data-request-error role="alert" hidden></p>
+      <div class="form-actions"><button class="button button-primary" type="submit">儲存偏好</button>
+      ${button('登出', 'logout')}</div>
+    </form>`, '共讀偏好會用於推薦邀約。');
 }
 
 function showFilters() {
@@ -354,7 +521,7 @@ function showPublish() {
   const taipeiEpoch = Date.now() + 8 * 60 * minute;
   const earliest = new Date(taipeiEpoch).toISOString().slice(0, 16);
   const suggested = new Date(taipeiEpoch + 30 * minute).toISOString().slice(0, 16);
-  const p = state.profile;
+  const p = state.account;
   showDialog('發起讀書邀約', `
     <form data-form="publish" class="dialog-form">
       <label class="field"><span>邀約標題</span><input name="title" required maxlength="42" placeholder="例如：圖書館一起複習微積分"></label>
@@ -370,12 +537,13 @@ function showPublish() {
       </div>
       <label class="field"><span>共讀說明（選填）</span><textarea name="note" rows="2" maxlength="180" placeholder="說明想一起讀什麼。"></textarea></label>
       <p class="form-note">${icon('shield')} 實體邀約僅顯示概略校園區域。</p>
+      <p class="account-error" data-request-error role="alert" hidden></p>
       <button class="button button-primary" type="submit">${icon('plus')} 發布邀約</button>
-    </form>`, '這筆示範邀約會儲存在這個瀏覽器。');
+    </form>`);
 }
 
 function getSession(id) {
-  return [...samples, ...state.sessions].find(session => session.id === id);
+  return state.sessions.find(session => session.id === id);
 }
 
 function showDetails(id) {
@@ -385,13 +553,14 @@ function showDetails(id) {
   const canJoin = !session.own && !hasEnded(session) && !session.closed && session.joined < session.capacity && (!reservation || reservation.status === 'cancelled');
   showDialog(escape(session.title), `
     <div class="detail-content">
-      <div class="host">${avatar(session.initials, session.avatarColor)}<span><strong>${escape(session.host)}</strong><small>${escape(session.department)}${session.isSample ? ' · 示範夥伴' : ''}</small></span></div>
+      <div class="host">${avatar(session.initials, session.avatarColor)}<span><strong>${escape(session.host)}</strong><small>${escape(session.department)}</small></span></div>
       <div class="tags"><span>${escape(session.subject)}</span><span>${escape(session.style)}</span><span>${session.format === 'pair' ? '一對一' : '小團體'}</span></div>
       ${sessionFacts(session)}
       <p class="detail-capacity">${icon('users')} ${session.joined}／${session.capacity} 人</p>
       ${session.note ? `<p class="detail-note">${escape(session.note)}</p>` : ''}
       ${canJoin ? `<form data-form="join" data-id="${escape(id)}" class="dialog-form">
         <label class="check-field"><input type="checkbox" name="agree" required> 我確認可以參加這個時段。</label>
+        <p class="account-error" data-request-error role="alert" hidden></p>
         <button class="button button-primary" type="submit">送出加入申請</button>
       </form>` : reservation ? `<a class="button button-secondary" href="#plans" data-view="plans">${statusLabels[reservation.status]}・查看我的預約</a>` : `<p class="form-note">${session.own ? '這是你發起的邀約。' : '這個邀約目前無法加入。'}</p>`}
       ${session.own ? '' : `<div class="detail-safety">${button('檢舉', 'report', { glyph: 'flag', variant: 'text', attrs: `data-id="${escape(id)}"` })}${button('封鎖夥伴', 'block', { variant: 'text', attrs: `data-id="${escape(id)}"` })}</div>`}
@@ -405,11 +574,12 @@ function showSafety(id, action) {
   showDialog(report ? '檢舉邀約' : '封鎖夥伴', `
     <form class="dialog-form" data-form="${action}" data-id="${escape(id)}">
       ${report ? selectField('reason', '檢舉原因', ['不當內容', '可疑邀約', '騷擾或安全疑慮', '其他'], '不當內容') : `<p>封鎖後，${escape(session.host)} 的邀約會從探索頁隱藏。</p>`}
-      <button class="button button-primary" type="submit">${report ? '儲存檢舉' : '確認封鎖'}</button>
-    </form>`, '這項操作只會儲存在目前瀏覽器。');
+      <p class="account-error" data-request-error role="alert" hidden></p>
+      <button class="button button-primary" type="submit">${report ? '送出檢舉' : '確認封鎖'}</button>
+    </form>`, report ? '檢舉會交給管理員處理。' : '');
 }
 
-function handlePublish(form, data) {
+async function handlePublish(form, data) {
   const titleControl = form.elements.namedItem('title');
   const title = String(data.get('title')).trim();
   const scheduled = data.get('schedule') === 'later';
@@ -425,36 +595,84 @@ function handlePublish(form, data) {
     control.reportValidity();
     return;
   }
-  const { name, department } = state.profile;
-  const capacity = Number(data.get('capacity'));
   const mode = data.get('mode');
   const session = {
-    id: crypto.randomUUID(), title, school: SCHOOL, department, mode, own: true,
-    region: mode === 'online' ? '' : data.get('region'),
+    title, mode, region: mode === 'online' ? '' : data.get('region'),
     subject: data.get('subject'), style: data.get('style'),
-    format: capacity === 2 ? 'pair' : 'group', capacity, joined: 1,
+    capacity: Number(data.get('capacity')),
     start: new Date(start).toISOString(), end: new Date(start + Number(data.get('duration')) * minute).toISOString(),
-    host: name || '訪客', avatarColor: 'moss', initials: name.slice(0, 1) || '訪',
     note: String(data.get('note')).trim(),
   };
-  save({ sessions: [session, ...state.sessions] });
+  if (!await mutateStudy('/study/sessions', session)) return;
   dialog.close();
   navigate('plans');
   toast('已發起讀書邀約。');
 }
 
-function updateReservation(id, status) {
-  const entry = state.reservations[id];
-  if (!entry) return;
+async function updateReservation(id, action) {
   const change = {
-    confirmed: ['pending', '已模擬對方確認。'],
-    completed: ['confirmed', '已記錄共讀完成。'],
-    cancelled: [entry.status, '已取消預約。'],
-  }[status];
-  if (entry.status !== change[0]) return;
-  save({ reservations: { ...state.reservations, [id]: { ...entry, status, updatedAt: Date.now() } } });
+    confirm: ['confirmed', '已同意加入。'],
+    complete: ['completed', '已記錄共讀完成。'],
+    cancel: ['cancelled', '已取消預約。'],
+    reject: ['cancelled', '已婉拒加入申請。'],
+  }[action];
+  if (!await mutateStudy(`/study/reservations/${encodeURIComponent(id)}`, { status: change[0] })) return;
   render();
   toast(change[1]);
+}
+
+async function runRequest(control, execute, errorNode) {
+  if (activeRequest) return;
+  activeRequest = true;
+  if (control) control.disabled = true;
+  if (errorNode) errorNode.hidden = true;
+  try {
+    await execute();
+  } catch (error) {
+    if (errorNode?.isConnected && !errorNode.closest('dialog:not([open])')) {
+      errorNode.textContent = error.message;
+      errorNode.hidden = false;
+    } else {
+      toast(error.message);
+    }
+  } finally {
+    activeRequest = false;
+    if (control) control.disabled = false;
+  }
+}
+
+async function updateViewData() {
+  const currentView = view;
+  if (!state.account || !['plans', 'explore'].includes(view)) return;
+  try {
+    if (!await refreshStudy() || currentView !== view || dialog.open || activeRequest) return;
+    const mainFocused = document.activeElement === app.querySelector('main');
+    render();
+    if (mainFocused) app.querySelector('main').focus({ preventScroll: true });
+    syncFocus();
+  } catch (error) {
+    if (state.account && currentView === view) toast(error.message);
+  }
+}
+
+async function bootstrap() {
+  loading = true;
+  loadError = '';
+  render();
+  try {
+    const { account, adminSetup: canSetup } = await api('/account');
+    adminSetup = canSetup;
+    if (account) {
+      bindAccount(account);
+      await refreshStudy();
+      syncFocus();
+    }
+  } catch (error) {
+    loadError = error.message;
+  } finally {
+    loading = false;
+    render();
+  }
 }
 
 document.addEventListener('click', event => {
@@ -466,16 +684,43 @@ document.addEventListener('click', event => {
   const nav = event.target.closest('[data-view]');
   if (nav && !(event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.button !== 0)) {
     event.preventDefault();
+    if (activeRequest) return;
     if (dialog.open) dialog.close();
     navigate(nav.dataset.view);
     app.querySelector('main').focus({ preventScroll: true });
+    void updateViewData();
     return;
   }
 
   const control = event.target.closest('[data-action]');
-  if (!control) return;
+  if (!control || activeRequest) return;
   const { action, id, value } = control.dataset;
   switch (action) {
+    case 'auth-mode':
+      authMode = authMode === 'register' ? 'login' : 'register';
+      render();
+      app.querySelector('.account-form input').focus();
+      break;
+    case 'retry-bootstrap':
+      void bootstrap();
+      break;
+    case 'logout':
+      void runRequest(control, async () => {
+        await api('/auth/logout', { method: 'POST' });
+        resetAccount();
+        dialog.close();
+        render();
+      }, dialog.querySelector('[data-request-error]'));
+      break;
+    case 'refresh':
+      void runRequest(control, async () => {
+        if (!await refreshStudy()) return;
+        render();
+        app.querySelector('[data-action="refresh"]')?.focus({ preventScroll: true });
+        syncFocus();
+        toast('資料已更新。');
+      });
+      break;
     case 'find-now':
       filters.timing = 'now';
       refreshResults();
@@ -498,13 +743,18 @@ document.addEventListener('click', event => {
     case 'block':
     case 'report': showSafety(id, action); break;
     case 'close-dialog': dialog.close(); break;
-    case 'confirm': updateReservation(id, 'confirmed'); break;
-    case 'complete': updateReservation(id, 'completed'); break;
-    case 'cancel': updateReservation(id, 'cancelled'); break;
+    case 'confirm':
+    case 'complete':
+    case 'cancel':
+    case 'reject':
+      void runRequest(control, () => updateReservation(id, action));
+      break;
     case 'close-invite':
-      save({ sessions: state.sessions.map(session => session.id === id ? { ...session, closed: true } : session) });
-      render();
-      toast('已關閉讀書邀約。');
+      void runRequest(control, async () => {
+        if (!await mutateStudy(`/study/sessions/${encodeURIComponent(id)}/close`)) return;
+        render();
+        toast('已關閉讀書邀約。');
+      });
       break;
   }
 });
@@ -534,53 +784,75 @@ document.addEventListener('change', event => {
   }
 });
 
+app.addEventListener('submit', event => {
+  const form = event.target;
+  const action = form.dataset.auth;
+  if (!action) return;
+  event.preventDefault();
+  const credentials = Object.fromEntries(new FormData(form));
+  void runRequest(event.submitter, async () => {
+    const { account } = await api(`/auth/${action}`, { method: 'POST', data: credentials });
+    bindAccount(account);
+    try {
+      await refreshStudy();
+      syncFocus();
+    } catch (error) {
+      loadError = error.message;
+    }
+    render();
+    app.querySelector('main').focus({ preventScroll: true });
+  }, form.querySelector('[data-request-error]'));
+});
+
 dialog.addEventListener('submit', event => {
   event.preventDefault();
+  if (activeRequest) return;
   const form = event.target;
   const data = new FormData(form);
-  const session = getSession(form.dataset.id);
+  if (form.dataset.form === 'filters') {
+    filters = { ...filters, ...Object.fromEntries(data), cross: data.has('cross') };
+    dialog.close();
+    refreshResults();
+    return;
+  }
+  void runRequest(event.submitter, () => submitDialog(form, data), form.querySelector('[data-request-error]'));
+});
+
+dialog.addEventListener('cancel', event => {
+  if (activeRequest) event.preventDefault();
+});
+
+async function submitDialog(form, data) {
+  const { id, form: action } = form.dataset;
   switch (form.dataset.form) {
     case 'profile': {
-      const profile = Object.fromEntries(data);
-      profile.name = profile.name.trim();
-      save({ profile });
+      const { account } = await api('/profile', { method: 'PATCH', data: Object.fromEntries(data) });
+      state.account = account;
       dialog.close();
       render();
       app.querySelector('.profile-trigger').focus();
       toast('已儲存你的偏好。');
       break;
     }
-    case 'filters':
-      filters = { ...filters, ...Object.fromEntries(data), cross: data.has('cross') };
-      dialog.close();
-      refreshResults();
-      break;
     case 'publish':
-      handlePublish(form, data);
+      await handlePublish(form, data);
       break;
     case 'join':
-      if (!session || hasEnded(session) || session.closed || session.own || session.joined >= session.capacity || !data.has('agree')) return;
-      if (state.reservations[session.id] && state.reservations[session.id].status !== 'cancelled') return;
-      save({ reservations: { ...state.reservations, [session.id]: { session, status: 'pending', updatedAt: Date.now() } } });
+      if (!data.has('agree')) return;
+      if (!await mutateStudy(`/study/sessions/${encodeURIComponent(id)}/join`)) return;
       dialog.close();
       navigate('plans');
-      toast('已送出示範申請，等待對方確認。');
+      toast('已送出加入申請，等待對方確認。');
       break;
     case 'report':
-      if (!session) return;
-      save({ reports: [...state.reports, { id: session.id, reason: data.get('reason'), at: new Date().toISOString() }] });
-      dialog.close();
-      toast('已在此瀏覽器儲存示範檢舉。');
-      break;
     case 'block':
-      if (!session) return;
-      save({ blocked: [...new Set([...state.blocked, session.host])] });
+      if (!await mutateStudy(`/study/sessions/${encodeURIComponent(id)}/${action}`, { reason: data.get('reason') })) return;
       dialog.close();
       refreshResults();
-      toast('已隱藏該夥伴的邀約。');
+      toast(action === 'report' ? '已送出檢舉。' : '已隱藏該夥伴的邀約。');
       break;
   }
-});
+}
 
 window.addEventListener('hashchange', () => {
   const next = activeView();
@@ -589,6 +861,7 @@ window.addEventListener('hashchange', () => {
   if (dialog.open) dialog.close();
   render();
   window.scrollTo(0, 0);
+  void updateViewData();
 });
 
-render();
+void bootstrap();

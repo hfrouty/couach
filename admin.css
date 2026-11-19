@@ -1,0 +1,52 @@
+.admin-page {
+  width: min(100% - 2rem, 1100px);
+  margin-inline: auto;
+  padding: clamp(1.4rem, 4vw, 3rem) 0 4rem;
+}
+
+.admin-auth-panel,
+.admin-notice {
+  width: min(100%, 470px);
+  margin: 3vh auto 0;
+  padding: clamp(1.25rem, 4vw, 2rem);
+}
+
+.admin-auth-panel h1,
+.admin-heading h1 {
+  margin-top: .65rem;
+  font-size: clamp(1.6rem, 3.5vw, 2.4rem);
+  letter-spacing: -.035em;
+}
+
+.admin-auth-panel p,
+.admin-heading p {
+  color: var(--muted);
+}
+
+.admin-auth-panel .dialog-form { margin-top: 1.4rem; }
+.admin-auth-panel .button-primary { width: 100%; }
+.admin-auth-panel .admin-callout { margin-top: .8rem; padding: .6rem .8rem; background: #f3f5ee; border-radius: 8px; font-size: .91rem; }
+.admin-heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.admin-heading h1 { margin-top: 0; }
+.admin-actions { display: flex; gap: .45rem; flex-wrap: wrap; }
+.admin-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; margin: 1.15rem 0; }
+.admin-metric { padding: .85rem 1rem; }
+.admin-metric span { display: block; color: var(--muted); font-weight: 650; }
+.admin-metric strong { display: block; font-size: 1.85rem; }
+.admin-panel { margin: 1rem 0; padding: clamp(.9rem, 3vw, 1.5rem); }
+.admin-panel h2 { display: flex; gap: .45rem; align-items: center; margin: 0 0 .8rem; }
+.admin-table-wrap { overflow-x: auto; }
+.admin-panel table { width: 100%; border-collapse: collapse; text-align: left; font-size: .9rem; }
+.admin-panel th, .admin-panel td { padding: .66rem .53rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.admin-panel th { color: var(--muted); background: #f4f6ef; }
+.admin-empty { color: var(--muted); padding: .4rem 0; }
+.admin-page .admin-error { margin: .35rem 0; color: #831f22; background: #f9edeb; padding: .55rem .7rem; border-radius: 8px; }
+.admin-page button:disabled { opacity: .62; cursor: wait; }
+
+@media (max-width: 550px) {
+  .admin-summary { gap: .35rem; }
+  .admin-metric { padding: .56rem; }
+  .admin-metric span { font-size: .78rem; }
+  .admin-metric strong { font-size: 1.45rem; }
+  .admin-auth-panel { margin-top: 0; }
+}
