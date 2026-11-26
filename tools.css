@@ -4,6 +4,7 @@
 
 .tool-heading h1 {
   margin: 0 0 .45rem;
+  color: var(--blue-deep);
   font-size: clamp(1.85rem, 3vw, 2.5rem);
   line-height: 1.2;
   letter-spacing: -.035em;
@@ -49,7 +50,12 @@
   min-height: 23rem;
   align-content: center;
   text-align: center;
-  background: radial-gradient(ellipse at 50% 60%, #f1f6e3, transparent 70%), #fff;
+  background:
+    radial-gradient(circle at 11% 24%, #d7f6ff 0 19px, transparent 20px),
+    radial-gradient(circle at 19% 13%, #ebf8ff 0 8px, transparent 9px),
+    radial-gradient(circle at 90% 77%, #dcf7ff 0 27px, transparent 28px),
+    radial-gradient(ellipse at 50% 64%, #daf6ff, transparent 72%),
+    #fff;
 }
 
 .focus-timer h2,
@@ -60,7 +66,7 @@
 }
 
 .focus-timer h2 .icon {
-  color: #4b6b50;
+  color: var(--blue);
 }
 
 .timer-presets {
@@ -76,7 +82,7 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   background: #fff;
-  color: var(--moss);
+  color: var(--blue-deep);
   font: inherit;
   font-size: .875rem;
   font-weight: 650;
@@ -84,20 +90,20 @@
 }
 
 .timer-presets button:hover {
-  border-color: #a9bd99;
-  background: #f6f9ef;
+  border-color: #86bafa;
+  background: var(--wash);
 }
 
 .timer-presets button[aria-pressed='true'] {
-  border-color: #b6cd82;
-  background: var(--lime);
+  border-color: var(--blue-deep);
+  background: var(--yellow);
 }
 
 .timer-display {
   margin: 1rem 0 1.15rem;
-  color: var(--moss);
+  color: var(--blue-deep);
   font-size: clamp(3.9rem, 10vw, 6.2rem);
-  font-weight: 750;
+  font-weight: 800;
   font-variant-numeric: tabular-nums;
   line-height: 1;
   letter-spacing: -.055em;
@@ -125,16 +131,18 @@
 .focus-totals > div {
   display: grid;
   padding: .85rem 1rem;
-  border-radius: .8rem;
-  background: #f0f5e7;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--wash);
 }
 
 .focus-totals > div:nth-child(2) {
-  background: #f5f6f0;
+  border-color: #f2e6b1;
+  background: #fff8dd;
 }
 
 .focus-totals strong {
-  color: var(--moss);
+  color: var(--blue-deep);
   font-size: clamp(1.65rem, 4vw, 2.1rem);
   font-weight: 750;
   font-variant-numeric: tabular-nums;
@@ -153,6 +161,7 @@
   border-top: 1px solid var(--border);
   border-radius: 0;
   background: transparent;
+  box-shadow: none;
   color: var(--muted);
   text-align: left;
 }
@@ -189,8 +198,8 @@
   height: 1.5rem;
   place-items: center;
   border-radius: 50%;
-  background: #e9f1df;
-  color: #395b43;
+  background: #d9f6ff;
+  color: var(--blue-deep);
 }
 
 .focus-history-icon .icon {
@@ -209,34 +218,42 @@
 }
 
 .place-visual {
+  --place-wash: #d9f8ff;
+  --place-accent: #a9edff;
   display: grid;
   min-height: 7.35rem;
   place-items: center;
-  background: #e8f0db;
-  color: #426449;
+  background:
+    radial-gradient(circle at 19% 35%, #ffffffad 0 11px, transparent 12px),
+    radial-gradient(circle at 24% 62%, #ffffff82 0 5px, transparent 6px),
+    radial-gradient(circle at 80% 65%, #ffffff96 0 17px, transparent 18px),
+    linear-gradient(125deg, var(--place-wash), var(--place-accent));
+  color: var(--blue-deep);
 }
 
 .place-card:nth-child(2) .place-visual {
-  background: #e8ecf3;
-  color: #4d6279;
+  --place-wash: #e4f2ff;
+  --place-accent: #b9d7ff;
 }
 
 .place-card:nth-child(3) .place-visual {
-  background: #f4ecdb;
-  color: #785c3f;
+  --place-wash: #fff8d8;
+  --place-accent: #ffe792;
 }
 
 .place-card:nth-child(4) .place-visual {
-  background: #efedf4;
-  color: #685579;
+  --place-wash: #fff4fa;
+  --place-accent: var(--pink);
 }
 
 .place-visual .icon {
   width: 3.4rem;
   height: 3.4rem;
   padding: .75rem;
-  border-radius: 1rem;
-  background: #ffffff91;
+  border: 1px solid #ffffffba;
+  border-radius: 50%;
+  background: #ffffffe0;
+  box-shadow: 0 3px 0 #17357016;
 }
 
 .place-copy {

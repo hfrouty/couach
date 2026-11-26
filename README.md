@@ -47,4 +47,4 @@
 
 StudyMate 只要求 `openid` 和 `email` 權限。正式使用 Google 登入前，請依 Google 的應用程式發布規定設定可驗證的網域；學校也可能依 Workspace 政策限制第三方登入。[Google OAuth 政策](https://developers.google.com/identity/protocols/oauth2/policies)
 
-首頁圖片位於 `assets/library-study.webp`，使用 ImageGen 生成。生成方向為台灣大學圖書館的午後場景，窗外有綠意與遠山，右側深色木桌上擺放翻開的書、書堆、鉛筆與陶瓷咖啡杯。
+首頁插畫位於 `assets/study-pop.webp`，使用內建 ImageGen 生成。以藍色背景、翻開的書、筆記本、檸檬黃鉛筆、氣泡與星芒，呈現日系紙雕風格的校園共讀主視覺。
