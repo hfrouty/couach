@@ -19,12 +19,11 @@
 .account-welcome::before {
   content: "";
   grid-row: 2;
-  min-height: clamp(15rem, 38vh, 25rem);
+  justify-self: stretch;
+  aspect-ratio: 2 / 1;
   border: 3px solid var(--line);
   border-radius: 18px;
-  background:
-    url("./assets/study-pop.webp") left center / 71% auto no-repeat,
-    repeating-linear-gradient(135deg, #398e8e 0 16px, #58a3a2 16px 32px);
+  background: var(--paper) url("./assets/study-banner.webp") center / cover no-repeat border-box;
   box-shadow: 4px 4px 0 var(--line);
 }
 
@@ -173,27 +172,29 @@ button:disabled { cursor: wait; opacity: .62; }
 @media (max-width: 760px) {
   .account-layout { grid-template-columns: minmax(0, 1fr); }
   .account-welcome {
-    grid-template-columns: minmax(0, 1fr) clamp(5.3rem, 31vw, 10rem);
-    grid-template-rows: auto auto;
-    align-items: center;
-    gap: .85rem 1rem;
+    grid-template-columns: minmax(0, 420px);
+    justify-content: center;
+    gap: .85rem;
     border-right: 0;
     border-bottom: 1px solid var(--border);
     padding: 1.15rem 1rem 1.35rem;
   }
-  .account-brand { grid-column: 1 / -1; }
   .account-welcome::before {
-    grid-column: 2;
-    min-height: 0;
-    aspect-ratio: 1;
+    grid-row: 3;
     border-width: 2px;
     border-radius: 12px;
-    background-size: 100% auto, auto;
     box-shadow: var(--panel-shadow);
   }
-  .account-welcome-copy { grid-row: 2; grid-column: 1; }
+  .account-welcome-copy { grid-row: 2; }
   .account-welcome h1 { margin: .45rem 0; font-size: clamp(1.25rem, 5.6vw, 2.65rem); }
   .account-welcome-copy > p:last-child { font-size: .875rem; }
   .account-main { align-items: start; padding: 1.35rem 1rem 2.1rem; }
   .account-setup-link { margin-top: .6rem; }
+}
+
+@media (max-width: 360px) {
+  .account-welcome { gap: .6rem; padding-block: .85rem 1rem; }
+  .account-main { padding-top: 1rem; }
+  .account-card { padding: 1.1rem; }
+  .account-description { margin-bottom: 1rem; }
 }
