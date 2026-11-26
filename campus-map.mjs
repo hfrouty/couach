@@ -112,7 +112,7 @@ export function renderCampusMap({
     <header class="campus-map-header">
       <div>
         <p class="campus-map-school">${icon('pin')} ${name}${campus.area ? ` · ${escape(campus.area)}` : ''}</p>
-        <h1 id="campus-map-title">校園共讀地圖</h1>
+        <h2 id="campus-map-title">校園共讀地圖</h2>
         <p class="campus-map-instructions">點選共讀區域查看邀約${landmarks.length ? '，也可以查找圖書館與咖啡廳。' : '。'}</p>
       </div>
       ${actions ? `<div class="campus-map-actions">${actions}</div>` : ''}

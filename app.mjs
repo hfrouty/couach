@@ -13,11 +13,13 @@ const minute = 60_000;
 const timeZone = 'Asia/Taipei';
 const dayFormat = new Intl.DateTimeFormat('zh-TW', { timeZone, month: 'numeric', day: 'numeric' });
 const timeFormat = new Intl.DateTimeFormat('zh-TW', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const onlineScopeNote = '線上共讀不限校園區域';
 
 const initialFilters = { timing: 'all', subject: '', mode: '', region: '', style: '', department: '', cross: false, sort: 'score' };
 
 let state = emptyState();
 let filters = { ...initialFilters };
+let explorePane = 'list';
 let cleanup = () => {};
 let toastTimeout;
 let view = activeView();
@@ -117,6 +119,7 @@ function bindAccount(account) {
   state = { ...emptyState(), account, ...restoreTimer(account.id) };
   selectedCampusId = account.campusId ?? rememberedCampus(account.id);
   filters = { ...initialFilters };
+  explorePane = 'list';
   loadError = '';
 }
 
@@ -255,6 +258,7 @@ function activeView() {
 
 function navigate(next, scroll = true) {
   if (window.location.hash !== `#${next}`) history.pushState(null, '', `#${next}`);
+  if (next === 'explore') explorePane = 'list';
   view = next;
   render();
   if (scroll) window.scrollTo(0, 0);
@@ -325,6 +329,7 @@ function render() {
   const content = view === 'explore' ? renderExplore() : view === 'plans' ? renderPlans() : studyTools.render(view);
   app.innerHTML = renderShell(content);
   cleanup = view === 'explore' ? bindCampusMap(app) : studyTools.bind(app.querySelector('main'), view);
+  if (view === 'explore') updateExploreMap();
 }
 
 function passwordEntry(register, label) {
@@ -370,11 +375,10 @@ function renderAuth() {
     <main class="account-layout" id="main-content" tabindex="-1">
       <section class="account-welcome" aria-labelledby="welcome-heading">
         <div class="account-brand">
-          <img src="./assets/icon.svg" width="46" height="46" alt="">
+          <img src="./assets/icon.svg" width="88" height="88" alt="">
           <span><strong>StudyMate<span>.</span></strong><small>校園共讀</small></span>
         </div>
         <div class="account-welcome-copy">
-          <p class="hero-campus">${icon('book')} 校園共讀</p>
           <h1 id="welcome-heading">找個夥伴，<br><em>一起把書讀完。</em></h1>
           <p>在校園找人共讀、預約時段，累積你的學習紀錄。</p>
         </div>
@@ -409,33 +413,45 @@ function renderExplore() {
     <span class="select-wrap"><select id="campus-select" aria-label="切換校園">${selectOptions(CAMPUSES.map(campus => [campus.id, campus.shortName]), selectedCampusId)}</select>${icon('chevron')}</span>
   </label>`;
   return `
-    ${renderCampusMap({
-      campus, selectedRegion: filters.region, invitations: mapInvitations(now), places: getCampusPlaces(campus.id),
-      actions: campusSelector + button('即時找夥伴', 'find-now', { glyph: 'bolt', variant: 'secondary' }) + publish,
-    })}
-    <div class="dashboard-grid">
-      <section class="discovery" aria-labelledby="discovery-title">
-        <header class="section-heading heading-with-action" id="discovery-heading">
-          <div><h2 id="discovery-title" tabindex="-1">探索讀書夥伴</h2>
-          <p>依照科目、時間和校園區域，找到適合你的共讀邀約。</p></div>
-          ${button('重新整理', 'refresh', { glyph: 'rotate', variant: 'text', attrs: 'aria-label="重新整理邀約"' })}
-        </header>
-        <div class="filter-bar">
-          <div class="segmented" role="group" aria-label="依時段篩選">
-            ${[['all', '全部'], ['now', '正在揪團'], ['later', '可預約']].map(([key, label]) => `<button type="button" data-action="timing" data-value="${key}" aria-pressed="${filters.timing === key}">${key === 'now' ? '<span class="dot"></span>' : ''}${label}</button>`).join('')}
-          </div>
-          ${button('篩選', 'filters', { glyph: 'sliders' })}
+    <div class="explore-page">
+      <div class="explore-toolbar">
+        ${campusSelector}
+        <button type="button" class="button button-secondary explore-pane-toggle" data-action="explore-pane"
+          aria-controls="explore-map" aria-expanded="${explorePane === 'map'}">${explorePane === 'map' ? '看邀約' : '看地圖'}</button>
+        <div class="explore-toolbar-actions">
+          ${button('即時找夥伴', 'find-now', { glyph: 'bolt' })}
+          ${publish}
         </div>
-        <div class="results-line">
-          <div class="results-summary">
-            <span id="result-count" aria-live="polite">${resultCount(results)}</span>
-            <div class="active-filters" id="active-filters" role="group" aria-label="已套用篩選">${renderFilterChips()}</div>
+      </div>
+      <div class="explore-grid" data-pane="${explorePane}">
+        <section class="discovery" id="explore-list" aria-labelledby="discovery-title">
+          <header class="section-heading heading-with-action" id="discovery-heading">
+            <h1 id="discovery-title" tabindex="-1">探索讀書夥伴</h1>
+            ${button('重新整理', 'refresh', { glyph: 'rotate', variant: 'text', attrs: 'aria-label="重新整理邀約"' })}
+          </header>
+          <div class="filter-bar">
+            <div class="segmented" role="group" aria-label="依時段篩選">
+              ${[['all', '全部'], ['now', '正在揪團'], ['later', '可預約']].map(([key, label]) => `<button type="button" data-action="timing" data-value="${key}" aria-pressed="${filters.timing === key}">${key === 'now' ? '<span class="dot"></span>' : ''}${label}</button>`).join('')}
+            </div>
+            ${button('篩選', 'filters', { glyph: 'sliders' })}
           </div>
-          <label class="sort-control"><span class="sr-only">排序</span><select id="sort">${selectOptions([['score', '媒合度優先'], ['distance', '區域距離優先'], ['time', '時間優先']], filters.sort)}</select>${icon('chevron')}</label>
+          <div class="results-line">
+            <div class="results-summary">
+              <span id="result-count" aria-live="polite">${resultCount(results)}</span>
+              <div class="active-filters" id="active-filters" role="group" aria-label="已套用篩選">${renderFilterChips()}</div>
+            </div>
+            <label class="sort-control"><span class="sr-only">排序</span><select id="sort">${selectOptions([['score', '媒合度優先'], ['distance', '區域距離優先'], ['time', '時間優先']], filters.sort)}</select>${icon('chevron')}</label>
+          </div>
+          <p class="explore-online-note" data-online-scope${filters.mode === 'online' ? '' : ' hidden'}>${onlineScopeNote}</p>
+          <div id="results" class="session-grid explore-results">${renderResults(results)}</div>
+        </section>
+        <div class="explore-map" id="explore-map">
+          ${renderCampusMap({
+            campus, selectedRegion: filters.region, invitations: mapInvitations(now), places: getCampusPlaces(campus.id),
+          })}
         </div>
-        <div id="results" class="session-grid">${renderResults(results)}</div>
-      </section>
-      <aside class="dashboard-aside" aria-label="讀書小工具">
+      </div>
+      <aside class="dashboard-aside explore-support" aria-label="讀書小工具">
         <section class="aside-panel plan-summary">
           <span class="tile-icon">${icon('calendar')}</span>
           <h2>我的讀書計畫</h2>
@@ -477,7 +493,7 @@ function matchingCandidates(now, acrossRegions = false) {
 }
 
 function mapInvitations(now) {
-  return filters.timing === 'now' ? matchingCandidates(now, true) : sessionsAtCampus();
+  return matchingCandidates(now, true);
 }
 
 function matchingSessions(now) {
@@ -497,15 +513,22 @@ function renderResults(results) {
   if (results.length) return results.map(renderCard).join('');
   if (filters.timing === 'now') {
     return `<div class="empty-state"><span class="tile-icon">${icon('search')}</span>
-      <h3>目前沒有其他人正在揪團</h3>
-      <a class="button button-secondary" href="#plans" data-view="plans">查看我的邀約</a>
+      <h3>${activeFilters().length ? '目前沒有符合條件的即時邀約' : '目前沒有其他人正在揪團'}</h3>
+      <div class="empty-actions">
+        ${button('現在發起一團', 'publish', { glyph: 'plus', variant: 'primary', attrs: 'data-value="now"' })}
+        ${button('看可預約時段', 'browse-upcoming')}
+      </div>
     </div>`;
   }
+  const hasInvites = sessionsAtCampus().some(session => !session.closed && !hasEnded(session));
   return `
     <div class="empty-state"><span class="tile-icon">${icon('search')}</span>
-    ${sessionsAtCampus().some(session => !session.closed && !hasEnded(session))
-      ? `<h3>目前沒有符合條件的邀約</h3><p>可以放寬條件，或自己發起共讀。</p>${button('清除篩選', 'reset-filters')}`
-      : `<h3>這個校園目前沒有共讀邀約</h3><p>發布一場共讀，讓附近的讀書夥伴找到你。</p>${button('發起第一場邀約', 'publish', { glyph: 'plus', variant: 'primary' })}`}
+      <h3>${filters.timing === 'later' ? '目前沒有符合條件的可預約邀約'
+        : hasInvites ? '目前沒有符合條件的邀約' : '這個校園目前沒有共讀邀約'}</h3>
+      <div class="empty-actions">
+        ${button(hasInvites ? '發起符合條件的邀約' : '發起第一場邀約', 'publish', { glyph: 'plus', variant: 'primary' })}
+        ${activeFilters().length ? button('清除篩選', 'reset-filters') : ''}
+      </div>
     </div>`;
 }
 
@@ -538,6 +561,22 @@ function removeFilter(key) {
   (chips[Math.min(index, chips.length - 1)] ?? app.querySelector('[data-action="filters"]'))?.focus();
 }
 
+function showExplorePane(pane) {
+  explorePane = pane;
+  app.querySelector('.explore-grid').dataset.pane = pane;
+  const toggle = app.querySelector('[data-action="explore-pane"]');
+  toggle.setAttribute('aria-expanded', String(pane === 'map'));
+  toggle.textContent = pane === 'map' ? '看邀約' : '看地圖';
+}
+
+function updateExploreMap(now = Date.now()) {
+  updateCampusMapSelection(app, filters.region, mapInvitations(now));
+  for (const control of app.querySelectorAll('[data-action="map-region"]:not([data-value=""])')) {
+    if (filters.mode === 'online') control.setAttribute('aria-disabled', 'true');
+    else control.removeAttribute('aria-disabled');
+  }
+}
+
 function refreshResults() {
   const container = document.querySelector('#results');
   if (!container) return;
@@ -546,20 +585,25 @@ function refreshResults() {
   container.innerHTML = renderResults(results);
   document.querySelector('#result-count').textContent = resultCount(results);
   document.querySelector('#active-filters').innerHTML = renderFilterChips();
-  updateCampusMapSelection(app, filters.region, mapInvitations(now));
+  app.querySelector('[data-online-scope]').hidden = filters.mode !== 'online';
+  updateExploreMap(now);
   for (const control of app.querySelectorAll('[data-action="timing"]')) {
     control.setAttribute('aria-pressed', String(control.dataset.value === filters.timing));
   }
   document.querySelector('#sort').value = filters.sort;
 }
 
+function formatSessionStart(start) {
+  const day = dayFormat.format(start);
+  const prefix = day === dayFormat.format(Date.now()) ? '今天' : day;
+  return `${prefix} ${timeFormat.format(start)}`;
+}
+
 function formatSlot(session) {
   const start = new Date(session.start);
   const end = new Date(session.end);
-  const day = dayFormat.format(start);
-  const prefix = day === dayFormat.format(Date.now()) ? '今天' : day;
-  const endDay = dayFormat.format(end) === day ? '' : `${dayFormat.format(end)} `;
-  return `${prefix} ${timeFormat.format(start)}–${endDay}${timeFormat.format(end)}`;
+  const endDay = dayFormat.format(end) === dayFormat.format(start) ? '' : `${dayFormat.format(end)} `;
+  return `${formatSessionStart(start)}–${endDay}${timeFormat.format(end)}`;
 }
 
 function sessionFacts(session, distance, showCampus = false) {
@@ -578,16 +622,20 @@ function isOwnSession(session) {
   return Boolean(state.account && session.hostId === state.account.id);
 }
 
-function renderCard({ session, score, distance }) {
+function renderCard({ session, score }) {
   const live = isLive(session);
+  const startLabel = formatSessionStart(new Date(session.start));
+  const campus = getCampus(session.campusId ?? DEFAULT_CAMPUS_ID)?.shortName ?? session.school;
+  const place = session.mode === 'online' ? '線上共讀' : session.region;
+  const remaining = session.capacity - session.joined;
   return `
     <article class="session-card">
+      <p class="session-lead"><time datetime="${escape(session.start)}">${startLabel}</time><span aria-hidden="true">｜</span><strong>${escape(session.subject)}</strong></p>
+      <p class="session-meta">${escape(campus)}・${escape(place)}・${escape(session.style)}・${remaining > 0 ? `剩 ${remaining} 位` : '已額滿'}</p>
+      <h3>${escape(session.title)}</h3>
       <div class="card-top"><span class="status-pill ${live ? 'status-live' : 'status-later'}"><span class="dot"></span>${live ? '正在揪團' : '開放預約'}</span>
         ${isOwnSession(session) ? '<span class="score">我的邀約</span>' : `<span class="score" title="參考科目、讀書習慣、時段與概略區域">${icon('spark')} ${score}% 媒合度</span>`}
       </div>
-      <h3>${escape(session.title)}</h3>
-      <div class="tags"><span>${escape(session.subject)}</span><span>${escape(session.style)}</span><span>${session.format === 'pair' ? '一對一' : '小團體'}</span></div>
-      ${sessionFacts(session, distance)}
       <footer class="card-footer">
         <div class="host">${avatar(session.initials, session.avatarColor)}<span><strong>${escape(session.host)}</strong><small>${escape(session.department)}</small></span></div>
         ${button('查看邀約', 'details', { variant: 'card', attrs: `data-id="${escape(session.id)}" aria-label="查看邀約：${escape(session.title)}"` })}
@@ -690,9 +738,20 @@ function showFilters() {
         ${selectField('style', '共讀習慣', STYLES, filters.style, '不限習慣')}
         ${selectField('department', '科系', DEPARTMENTS, filters.department, '所有科系')}
       </div>
+      <p class="form-note" data-online-filter-note role="status" hidden>${onlineScopeNote}</p>
       <label class="check-field"><input type="checkbox" name="cross" ${filters.cross ? 'checked' : ''}> 排除同系學生</label>
       <div class="form-actions">${button('清除篩選', 'reset-filters')}<button class="button button-primary" type="submit">套用篩選</button></div>
     </form>`);
+  updateFilterLocation(dialog.querySelector('[data-form="filters"]'));
+}
+
+function updateFilterLocation(form) {
+  const online = form.elements.namedItem('mode').value === 'online';
+  const region = form.elements.namedItem('region');
+  if (online) region.value = '';
+  region.disabled = online;
+  region.closest('.field').hidden = online;
+  form.querySelector('[data-online-filter-note]').hidden = !online;
 }
 
 function publishDraftKey(campusId) {
@@ -702,10 +761,28 @@ function publishDraftKey(campusId) {
 function savePublishDraft(control) {
   const key = publishDraftKey(control.form.dataset.campusId);
   const draft = publishDrafts.get(key) ?? {};
-  publishDrafts.set(key, { ...draft, [control.name]: control.value });
+  const edit = { [control.name]: control.value };
+  if (['subject', 'mode', 'region'].includes(control.name)) {
+    edit[`${control.name}Filter`] = publishFilter(control.name).context;
+  }
+  publishDrafts.set(key, { ...draft, ...edit });
 }
 
-function showPublish() {
+function publishFilter(name) {
+  if (view !== 'explore') return { value: '', context: '' };
+  if (name === 'mode' && filters.region) {
+    return { value: 'in-person', context: `in-person:${filters.region}` };
+  }
+  return { value: filters[name], context: filters[name] };
+}
+
+function publishChoice(name, draft, fallback) {
+  const { value, context } = publishFilter(name);
+  if (value && context !== draft[`${name}Filter`]) return value;
+  return draft[name] ?? (value || fallback);
+}
+
+function showPublish(startNow = false) {
   const taipeiEpoch = Date.now() + 8 * 60 * minute;
   const earliest = new Date(taipeiEpoch).toISOString().slice(0, 16);
   const suggested = new Date(taipeiEpoch + 30 * minute).toISOString().slice(0, 16);
@@ -714,15 +791,16 @@ function showPublish() {
   const regions = campusRegionNames(campus.id);
   const draft = publishDrafts.get(publishDraftKey(campus.id)) ?? {};
   const homeRegion = (p.campusId ?? DEFAULT_CAMPUS_ID) === campus.id ? p.region : '';
-  const region = [draft.region, filters.region, homeRegion].find(value => regions.includes(value)) ?? regions[0];
-  const mode = draft.mode ?? 'in-person';
-  const schedule = draft.schedule ?? 'now';
+  const region = [publishChoice('region', draft, filters.region), homeRegion].find(value => regions.includes(value)) ?? regions[0];
+  const subject = publishChoice('subject', draft, p.subject);
+  const mode = publishChoice('mode', draft, 'in-person');
+  const schedule = startNow ? 'now' : draft.schedule ?? 'now';
   const scheduled = schedule === 'later';
   showDialog('發起讀書邀約', `
     <form data-form="publish" data-campus-id="${escape(campus.id)}" class="dialog-form">
       <label class="field"><span>邀約標題</span><input name="title" required autofocus maxlength="42" placeholder="例如：圖書館一起複習微積分" value="${escape(draft.title ?? '')}"></label>
       <div class="field-grid">
-        ${selectField('subject', '科目', SUBJECTS, draft.subject ?? p.subject)}
+        ${selectField('subject', '科目', SUBJECTS, subject)}
         ${selectField('style', '共讀習慣', STYLES, draft.style ?? p.style)}
         ${selectField('mode', '共讀方式', [['in-person', '實體'], ['online', '線上']], mode)}
         ${selectField('region', '校園區域', regions, region)}
@@ -733,6 +811,7 @@ function showPublish() {
       </div>
       <label class="field"><span>共讀說明（選填）</span><textarea name="note" rows="2" maxlength="180" placeholder="說明想一起讀什麼。">${escape(draft.note ?? '')}</textarea></label>
       <p class="form-note" data-campus-privacy>${icon('shield')} 實體邀約僅顯示概略校園區域。</p>
+      <p class="form-note" data-publish-online-note role="status" hidden>${onlineScopeNote}</p>
       <p class="account-error" data-request-error role="alert" hidden></p>
       <button class="button button-primary" type="submit">${icon('plus')} 發布邀約</button>
     </form>`, `${escape(campus.name)} · ${escape(campus.area)}`);
@@ -745,6 +824,7 @@ function updatePublishLocation(form) {
   region.disabled = online;
   region.closest('.field').hidden = online;
   form.querySelector('[data-campus-privacy]').hidden = online;
+  form.querySelector('[data-publish-online-note]').hidden = !online;
 }
 
 function showInviteEdit(id) {
@@ -974,9 +1054,18 @@ document.addEventListener('click', event => {
       break;
     case 'find-now':
       filters.timing = 'now';
+      showExplorePane('list');
       refreshResults();
       document.querySelector('#discovery-title').focus();
       document.querySelector('#discovery-heading').scrollIntoView({ block: 'start' });
+      break;
+    case 'browse-upcoming':
+      filters.timing = 'later';
+      refreshResults();
+      app.querySelector('[data-action="timing"][data-value="later"]').focus();
+      break;
+    case 'explore-pane':
+      showExplorePane(explorePane === 'list' ? 'map' : 'list');
       break;
     case 'timing':
       filters.timing = value;
@@ -986,18 +1075,22 @@ document.addEventListener('click', event => {
       removeFilter(value);
       break;
     case 'map-region':
+      if (value && filters.mode === 'online') {
+        toast(onlineScopeNote);
+        break;
+      }
       filters.region = filters.region === value ? '' : value;
-      if (filters.region && filters.mode === 'online') filters.mode = '';
       refreshResults();
       break;
     case 'reset-filters':
       filters = { ...initialFilters };
       if (dialog.open) dialog.close();
       refreshResults();
+      if (!control.isConnected) app.querySelector('[data-action="filters"]').focus();
       break;
     case 'profile': showProfile(); break;
     case 'filters': showFilters(); break;
-    case 'publish': showPublish(); break;
+    case 'publish': showPublish(value === 'now'); break;
     case 'edit-invite': showInviteEdit(id); break;
     case 'details': showDetails(id); break;
     case 'block':
@@ -1037,6 +1130,7 @@ document.addEventListener('change', event => {
     filters.sort = target.value;
     refreshResults();
   }
+  if (target.form?.dataset.form === 'filters' && target.name === 'mode') updateFilterLocation(target.form);
   if (target.form?.dataset.form !== 'publish') return;
   if (target.matches('select')) savePublishDraft(target);
   if (target.name === 'mode') updatePublishLocation(target.form);
@@ -1078,6 +1172,7 @@ dialog.addEventListener('submit', event => {
   const data = new FormData(form);
   if (form.dataset.form === 'filters') {
     filters = { ...filters, ...Object.fromEntries(data), cross: data.has('cross') };
+    if (filters.mode === 'online') filters.region = '';
     dialog.close();
     refreshResults();
     return;
@@ -1127,6 +1222,7 @@ async function submitDialog(form, data) {
 window.addEventListener('hashchange', () => {
   const next = activeView();
   if (next === view) return;
+  if (next === 'explore') explorePane = 'list';
   view = next;
   if (dialog.open) dialog.close();
   render();

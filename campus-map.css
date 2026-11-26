@@ -1,57 +1,36 @@
 .campus-map {
   display: grid;
-  gap: 1rem;
-  margin-bottom: clamp(1.5rem, 4vw, 2.65rem);
+  gap: .75rem;
+  min-width: 0;
 }
 
 .campus-map-header {
-  position: relative;
-  isolation: isolate;
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: .9rem 1.5rem;
-  padding: clamp(1rem, 2.6vw, 1.85rem);
-  border: 2px solid var(--line);
-  border-radius: var(--radius);
-  background: radial-gradient(#2528270d .55px, transparent .7px) 0 0 / 4px 4px, #fffdf7;
-  color: var(--ink);
-  box-shadow: var(--panel-shadow);
-}
-
-.campus-map-header::before {
-  position: absolute;
-  z-index: -1;
-  inset: 0 0 auto auto;
-  width: clamp(3.65rem, 7vw, 6.5rem);
-  height: .65rem;
-  border-radius: 0 calc(var(--radius) - 2px) 0 5px;
-  background: repeating-linear-gradient(135deg, var(--teal) 0 5px, var(--aqua) 5px 10px);
-  content: '';
-  pointer-events: none;
+  gap: .65rem 1rem;
 }
 
 .campus-map-school {
   display: flex;
   align-items: center;
   gap: .35rem;
-  color: var(--teal);
-  font-size: .88rem;
-  font-weight: 800;
+  color: var(--teal-deep);
+  font-size: .83rem;
+  font-weight: 700;
 }
 
 .campus-map-school .icon { width: 1.05rem; height: 1.05rem; }
 
-.campus-map-header h1 {
+.campus-map-header :is(h1, h2) {
   margin-top: .15rem;
-  font-size: clamp(1.8rem, 3.25vw, 2.75rem);
-  font-weight: 900;
-  letter-spacing: -.035em;
-  line-height: 1.2;
+  font-size: clamp(1.15rem, 1.65vw, 1.45rem);
+  font-weight: 780;
+  line-height: 1.28;
 }
 
-.campus-map-instructions { margin-top: .4rem; color: var(--muted); }
+.campus-map-instructions { margin-top: .25rem; color: var(--muted); font-size: .9rem; }
 
 .campus-map-actions {
   display: flex;
@@ -63,7 +42,7 @@
 .campus-map-picker { min-width: 7.3rem; }
 
 .campus-map-content {
-  --map-border: var(--line);
+  --map-border: var(--border);
   --region-color: #24534f;
   --region-tint: #e7eeea;
   --marker-shadow: #20282245;
@@ -74,16 +53,13 @@
 
 .campus-map-surface {
   min-width: 0;
-  border-radius: var(--radius);
-  outline: 1px solid var(--map-border);
-  box-shadow: var(--panel-shadow);
 }
 
 .campus-map-viewport {
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  height: clamp(21rem, 42vw, 28.5rem);
+  height: clamp(18rem, 24vw, 23rem);
   border: 1px solid var(--map-border);
   border-radius: var(--radius) var(--radius) 0 0;
   background: var(--wash);
@@ -243,7 +219,7 @@
   border-radius: 5px;
   background: #fff;
   color: var(--teal-deep);
-  box-shadow: 2px 2px 0 var(--map-border);
+  box-shadow: 0 1px 5px #20392e1b;
   font-size: 1.45rem;
   font-weight: 700;
   line-height: 1;
@@ -253,7 +229,7 @@
   display: grid;
   border: 1px solid var(--map-border);
   border-radius: 5px;
-  box-shadow: 2px 2px 0 var(--map-border);
+  box-shadow: 0 1px 5px #20392e1b;
 }
 
 .campus-map-zoom-controls button {
@@ -297,7 +273,7 @@
   border: 1px solid var(--map-border);
   border-radius: 8px;
   background: #fff;
-  box-shadow: 2px 2px 0 var(--map-border);
+  box-shadow: 0 2px 8px #20392e26;
   cursor: default;
 }
 
@@ -392,6 +368,12 @@
   color: var(--ink);
 }
 
+.campus-map-pin[aria-disabled="true"],
+.campus-region-button[aria-disabled="true"] {
+  opacity: .65;
+  cursor: not-allowed;
+}
+
 .campus-region-count {
   border-radius: 999px;
   padding-inline: .37rem;
@@ -405,10 +387,9 @@
 .campus-map-places {
   min-width: 0;
   padding: 1.05rem;
-  border: 2px solid var(--map-border);
+  border: 1px solid var(--map-border);
   border-radius: var(--radius);
   background: #fffdf7;
-  box-shadow: var(--panel-shadow);
 }
 
 .campus-map-places h2 {
@@ -418,7 +399,7 @@
   font-weight: 850;
 }
 
-.campus-map-place-groups { display: grid; gap: .75rem; }
+.campus-map-place-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(11rem, 100%), 1fr)); gap: .75rem; }
 
 .campus-map-place-group h3 {
   display: flex;
@@ -455,18 +436,9 @@
 .campus-map-place-group li button:hover, .campus-map-place-group li a:hover { background: var(--wash); }
 .campus-map-place-group li:has([aria-pressed="true"]) :is(button, a):hover { background: var(--yellow); }
 
-@media (min-width: 1020px) {
-  .campus-map-content-with-places { grid-template-columns: minmax(0, 1fr) minmax(235px, 25%); }
-  .campus-map-places { align-self: start; }
-}
-
-@media (min-width: 621px) and (max-width: 1019px) {
-  .campus-map-place-groups { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
-}
-
 @media (max-width: 620px) {
   .campus-map { gap: .8rem; }
-  .campus-map-header { gap: .7rem; padding: 1rem .85rem; }
+  .campus-map-header { gap: .6rem; }
   .campus-map-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .45rem; width: 100%; }
   .campus-map-actions .button { padding-inline: .55rem; }
   .campus-map-picker { min-width: 0; }
