@@ -472,7 +472,10 @@ function renderExplore() {
 
 function renderCampusPicks(campus, cafeCount) {
   return `<section class="campus-picks" aria-labelledby="campus-picks-title">
-    <h2 id="campus-picks-title">校園精選</h2>
+    <header class="campus-picks-heading">
+      <h2 id="campus-picks-title">校園精選</h2>
+      <img class="campus-picks-mascot" src="./assets/campus-mascot.webp" alt="" width="224" height="224" loading="lazy" decoding="async">
+    </header>
     <div class="campus-picks-grid">
       ${cafeCount ? `<article class="campus-pick">
         <img src="./assets/campus-cafe.webp" alt="" width="960" height="480" loading="lazy">

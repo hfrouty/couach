@@ -49,3 +49,4 @@ StudyMate 只要求 `openid` 和 `email` 權限。正式使用 Google 登入前�
 
 登入頁、導覽和瀏覽器分頁使用同一個黃色書本標誌 `assets/icon.svg`。
 「校園精選」的咖啡廳插畫 `assets/campus-cafe.webp` 由內建 ImageGen 生成，以復古紙感描繪窗邊的咖啡、筆記本與校園拱廊。
+精選區的小書本角色 `assets/campus-mascot.webp` 由內建 ImageGen 生成，以暖黃書封、奶油白紙頁、深青書籤與粗墨線繪製成透明貼紙。
