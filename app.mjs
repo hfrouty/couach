@@ -2,7 +2,7 @@ import { icon } from './icons.mjs';
 import { isLive, scoreSession } from './matching.mjs';
 import { SUBJECTS, STYLES, DEPARTMENTS, PLACES } from './sample-data.mjs';
 import { createStudyTools } from './study-tools.mjs';
-import { bindCampusMap, renderCampusMap, updateCampusMapSelection } from './campus-map.mjs';
+import { bindCampusMap, renderCampusMap, showCampusCafes, updateCampusMapSelection } from './campus-map.mjs';
 import { getCampusPlaces } from './campus-places.mjs';
 import { CAMPUSES, DEFAULT_CAMPUS_ID, campusRegionNames, getCampus } from './campuses.mjs';
 
@@ -405,6 +405,7 @@ function renderAuth() {
 function renderExplore() {
   const now = Date.now();
   const campus = activeCampus();
+  const campusPlaces = getCampusPlaces(campus.id);
   const results = matchingSessions(now);
   const pending = Object.values(state.reservations).filter(item => item.status === 'pending' && !hasEnded(item.session)).length;
   const upcoming = Object.values(state.reservations).filter(item => item.status === 'confirmed' && !hasEnded(item.session)).length;
@@ -444,10 +445,11 @@ function renderExplore() {
           </div>
           <p class="explore-online-note" data-online-scope${filters.mode === 'online' ? '' : ' hidden'}>${onlineScopeNote}</p>
           <div id="results" class="session-grid explore-results">${renderResults(results)}</div>
+          ${renderCampusPicks(campus, campusPlaces.filter(place => place.kind === 'cafe').length)}
         </section>
         <div class="explore-map" id="explore-map">
           ${renderCampusMap({
-            campus, selectedRegion: filters.region, invitations: mapInvitations(now), places: getCampusPlaces(campus.id),
+            campus, selectedRegion: filters.region, invitations: mapInvitations(now), places: campusPlaces,
           })}
         </div>
       </div>
@@ -466,6 +468,30 @@ function renderExplore() {
         </section>
       </aside>
     </div>`;
+}
+
+function renderCampusPicks(campus, cafeCount) {
+  return `<section class="campus-picks" aria-labelledby="campus-picks-title">
+    <h2 id="campus-picks-title">校園精選</h2>
+    <div class="campus-picks-grid">
+      ${cafeCount ? `<article class="campus-pick">
+        <img src="./assets/campus-cafe.webp" alt="" width="960" height="480" loading="lazy">
+        <div class="campus-pick-copy">
+          <h3>校園附近的咖啡廳</h3>
+          <p>${escape(campus.shortName)}周邊 ${cafeCount} 間精選咖啡廳</p>
+          ${button('在地圖上看咖啡廳', 'campus-cafes', { glyph: 'cup', variant: 'feature' })}
+        </div>
+      </article>` : ''}
+      <article class="campus-pick">
+        <img src="./assets/study-banner.webp" alt="" width="960" height="480" loading="lazy">
+        <div class="campus-pick-copy">
+          <h3>校園讀書空間</h3>
+          <p>圖書館與適合共讀的校園空間</p>
+          <a href="#places" class="button button-feature" data-view="places">${icon('library')} 查看讀書空間</a>
+        </div>
+      </article>
+    </div>
+  </section>`;
 }
 
 function hasEnded(session, now = Date.now()) {
@@ -1066,6 +1092,10 @@ document.addEventListener('click', event => {
       break;
     case 'explore-pane':
       showExplorePane(explorePane === 'list' ? 'map' : 'list');
+      break;
+    case 'campus-cafes':
+      showExplorePane('map');
+      if (showCampusCafes(app)) app.querySelector('.explore-toolbar').scrollIntoView({ block: 'start' });
       break;
     case 'timing':
       filters.timing = value;

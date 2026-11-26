@@ -24,7 +24,7 @@ const publicFiles = new Map([
   ...[
     'app.mjs', 'admin.mjs', 'campus-map.mjs', 'campus-places.mjs', 'campuses.mjs', 'matching.mjs', 'sample-data.mjs', 'study-tools.mjs', 'icons.mjs',
     'styles.css', 'tools.css', 'account.css', 'admin.css', 'campus-map.css',
-    'assets/icon.svg', 'assets/library-study.webp', 'assets/study-pop.webp', 'assets/study-banner.webp', 'assets/paper-grain.webp',
+    'assets/icon.svg', 'assets/library-study.webp', 'assets/study-pop.webp', 'assets/study-banner.webp', 'assets/campus-cafe.webp', 'assets/paper-grain.webp',
   ].map(name => [`/${name}`, name]),
 ]);
 const dataLimit = 16 * 1024;

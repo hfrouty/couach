@@ -17,6 +17,10 @@ const markerSides = [
   { side: 'above', x: 0, y: -18 },
   { side: 'left', x: -18, y: 0 },
   { side: 'right', x: 18, y: 0 },
+  { side: 'below-left', x: -18, y: 18 },
+  { side: 'below-right', x: 18, y: 18 },
+  { side: 'above-left', x: -18, y: -18 },
+  { side: 'above-right', x: 18, y: -18 },
 ];
 
 export const DEFAULT_MAP_CAMPUS = getCampus(DEFAULT_CAMPUS_ID);
@@ -78,7 +82,18 @@ function placeMarker(place) {
   return `<button type="button" class="campus-map-place-pin campus-map-place-kind" data-map-pin
     data-map-place="${escape(place.id)}" data-place-kind="${place.kind}" data-place-name="${name}"
     data-latitude="${latitude}" data-longitude="${longitude}"
-    aria-pressed="false" aria-label="${name}（${label}）" title="${name}" tabindex="-1">${icon(glyph)}</button>`;
+    aria-pressed="false" aria-label="${name}（${label}）" tabindex="-1">${icon(glyph)}
+    <span class="campus-map-place-label" aria-hidden="true">${name}</span>
+  </button>`;
+}
+
+function placeFilters(places) {
+  const kinds = Object.keys(placeKinds).filter(kind => places.some(place => place.kind === kind));
+  return `<div class="campus-map-place-filters" role="group" aria-label="篩選地圖地點">
+    <button type="button" class="campus-map-place-filter" data-map-place-filter="" aria-pressed="true">全部地點</button>
+    ${kinds.map(kind => `<button type="button" class="campus-map-place-filter campus-map-place-kind"
+      data-map-place-filter="${kind}" data-place-kind="${kind}" aria-pressed="false">${icon(placeKinds[kind].glyph)} ${placeKinds[kind].label}</button>`).join('')}
+  </div>`;
 }
 
 function placeList(places) {
@@ -88,7 +103,7 @@ function placeList(places) {
       ${Object.entries(placeKinds).map(([kind, { label, glyph }]) => {
         const members = places.filter(place => place.kind === kind);
         if (!members.length) return '';
-        return `<div class="campus-map-place-group">
+        return `<div class="campus-map-place-group" data-map-place-group="${kind}">
           <h3><span class="campus-map-legend-icon campus-map-place-kind" data-place-kind="${kind}">${icon(glyph)}</span>${label}</h3>
           <ul>${members.map(({ id, name, position }) => `<li>
             <button type="button" data-map-place="${escape(id)}" aria-pressed="false">${escape(name)}</button>
@@ -117,12 +132,13 @@ export function renderCampusMap({
       </div>
       ${actions ? `<div class="campus-map-actions">${actions}</div>` : ''}
     </header>
+    ${landmarks.length ? placeFilters(landmarks) : ''}
     <div class="campus-map-content${landmarks.length ? ' campus-map-content-with-places' : ''}">
       <div class="campus-map-surface">
         <div class="campus-map-viewport" data-map-viewport data-latitude="${Number(latitude)}" data-longitude="${Number(longitude)}"
           data-zoom="${Number(campus.zoom ?? 16)}" tabindex="0" role="group" aria-label="${name}周邊地圖"
           aria-describedby="campus-map-keyboard">
-          <span class="sr-only" id="campus-map-keyboard">可用方向鍵移動地圖，按加號或減號縮放。按 Tab 使用地圖控制或下方清單。</span>
+          <span class="sr-only" id="campus-map-keyboard">可用滑鼠滾輪縮放，或用方向鍵移動地圖、按加號或減號縮放。按 Tab 使用地圖控制或下方清單。</span>
           <div class="campus-map-tiles" data-map-tiles aria-hidden="true"></div>
           <div class="campus-map-pins">
             ${campus.regions.map(region => regionButton(region, selectedRegion, counts.get(region.name) ?? 0, true)).join('')}
@@ -149,10 +165,11 @@ export function renderCampusMap({
           </div>
         </div>
         <div class="campus-map-footer">
+          <p class="campus-map-wheel-hint">在地圖上滾動滑鼠滾輪可縮放</p>
           <ul class="campus-map-legend" aria-label="地圖圖例">
             <li><span class="campus-map-legend-icon">${icon('pin')}</span>共讀區域</li>
             ${Object.entries(placeKinds).filter(([kind]) => landmarks.some(place => place.kind === kind)).map(([kind, { label, glyph }]) =>
-              `<li><span class="campus-map-legend-icon campus-map-place-kind" data-place-kind="${kind}">${icon(glyph)}</span>${label}</li>`).join('')}
+              `<li data-map-place-legend="${kind}"><span class="campus-map-legend-icon campus-map-place-kind" data-place-kind="${kind}">${icon(glyph)}</span>${label}</li>`).join('')}
           </ul>
           <div class="campus-region-list" role="group" aria-label="依校園區域篩選">
             <button type="button" class="campus-region-button" data-action="map-region" data-value=""
@@ -164,6 +181,13 @@ export function renderCampusMap({
       ${landmarks.length ? placeList(landmarks) : ''}
     </div>
   </section>`;
+}
+
+export function showCampusCafes(root) {
+  const filter = root.querySelector('[data-map-place-filter="cafe"]');
+  filter?.click();
+  filter?.focus({ preventScroll: true });
+  return filter;
 }
 
 export function updateCampusMapSelection(root, selectedRegion = '', invitations) {
@@ -248,6 +272,9 @@ export function bindCampusMap(root) {
   const map = viewport.closest('[data-campus-map]');
   const placeButtons = [...map.querySelectorAll('[data-map-place]')];
   const placePins = new Map(pins.filter(pin => pin.hasAttribute('data-map-place')).map(pin => [pin.dataset.mapPlace, pin]));
+  const filterButtons = [...map.querySelectorAll('[data-map-place-filter]')];
+  const placeGroups = [...map.querySelectorAll('[data-map-place-group]')];
+  const placeLegends = [...map.querySelectorAll('[data-map-place-legend]')];
   const detail = viewport.querySelector('[data-map-place-detail]');
   const detailIcon = detail?.querySelector('[data-map-detail-icon]');
   const detailName = detail?.querySelector('[data-map-detail-name]');
@@ -260,6 +287,7 @@ export function bindCampusMap(root) {
   const pointers = new Map();
   const events = new AbortController();
   const options = { signal: events.signal };
+  let visiblePins = pins;
   let zoom = fitZoom();
   let center = worldPoint(...coordinates, zoom);
   let frame = 0;
@@ -275,7 +303,7 @@ export function bindCampusMap(root) {
     if (!placePins.size || !halfWidth || !halfHeight) return defaultZoom;
     for (let level = defaultZoom; level > minZoom; level -= 1) {
       const midpoint = worldPoint(...coordinates, level);
-      const fits = pins.every(pin => {
+      const fits = visiblePins.every(pin => {
         const position = worldPoint(Number(pin.dataset.latitude), Number(pin.dataset.longitude), level);
         return Math.abs(position.x - midpoint.x) <= halfWidth && Math.abs(position.y - midpoint.y) <= halfHeight;
       });
@@ -339,6 +367,21 @@ export function bindCampusMap(root) {
     selectedPlaceTrigger = undefined;
   }
 
+  function filterPlaces(filter) {
+    if (filter.getAttribute('aria-pressed') === 'true') return;
+    const kind = filter.dataset.mapPlaceFilter;
+    closePlace();
+    visiblePins = pins.filter(pin => {
+      const keep = !kind || !pin.dataset.placeKind || pin.dataset.placeKind === kind;
+      if (!keep) pin.hidden = true;
+      return keep;
+    });
+    for (const button of filterButtons) button.setAttribute('aria-pressed', String(button.dataset.mapPlaceFilter === kind));
+    for (const group of placeGroups) group.hidden = Boolean(kind && group.dataset.mapPlaceGroup !== kind);
+    for (const legend of placeLegends) legend.hidden = Boolean(kind && legend.dataset.mapPlaceLegend !== kind);
+    resetView();
+  }
+
   function updateTileStatus() {
     error.hidden = !tileEntries.size || ![...tileEntries.values()].every(tile => tile.failed);
   }
@@ -385,7 +428,7 @@ export function bindCampusMap(root) {
       tile.image.remove();
       tileEntries.delete(key);
     }
-    positionPins(pins, zoom, left, top, width, height);
+    positionPins(visiblePins, zoom, left, top, width, height);
     zoomIn.setAttribute('aria-disabled', String(zoom === maxZoom));
     zoomOut.setAttribute('aria-disabled', String(zoom === minZoom));
     updateTileStatus();
@@ -396,6 +439,8 @@ export function bindCampusMap(root) {
   }
 
   map.addEventListener('click', event => {
+    const filter = event.target.closest('[data-map-place-filter]');
+    if (filter) filterPlaces(filter);
     const place = event.target.closest('[data-map-place]');
     if (place) selectPlace(place);
     const command = event.target.closest('[data-map-command]')?.dataset.mapCommand;
@@ -431,13 +476,19 @@ export function bindCampusMap(root) {
   }, options);
 
   viewport.addEventListener('wheel', event => {
-    if (!event.ctrlKey || !viewport.matches(':focus-within') || !event.deltaY || !event.cancelable) return;
+    if (!event.cancelable || !event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+    if (event.altKey || event.metaKey || event.shiftKey || (event.ctrlKey && !viewport.matches(':focus-within'))) return;
+    const step = -Math.sign(event.deltaY);
+    if ((step > 0 && zoom === maxZoom) || (step < 0 && zoom === minZoom)) {
+      wheelDelta = 0;
+      return;
+    }
     event.preventDefault();
-    if (event.timeStamp - lastWheelAt > 220) wheelDelta = 0;
+    if (event.timeStamp - lastWheelAt > 220 || Math.sign(wheelDelta) !== Math.sign(event.deltaY)) wheelDelta = 0;
     lastWheelAt = event.timeStamp;
     wheelDelta += event.deltaMode ? Math.sign(event.deltaY) * 80 : event.deltaY;
-    if (Math.abs(wheelDelta) < 65) return;
-    changeZoom(-Math.sign(wheelDelta), viewportPoint(event.clientX, event.clientY));
+    if (Math.abs(wheelDelta) < 48) return;
+    changeZoom(step, viewportPoint(event.clientX, event.clientY));
     wheelDelta = 0;
   }, { ...options, passive: false });
 
