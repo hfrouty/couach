@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">StudyMate</string>
+    <string name="offline_title">無法連上 StudyMate</string>
+    <string name="offline_description">請檢查網路連線，再試一次。</string>
+    <string name="retry">重新連線</string>
+    <string name="open_browser">使用瀏覽器開啟</string>
+    <string name="no_handler">這台裝置找不到可以開啟連結的 App。</string>
+    <string name="google_in_browser">請在瀏覽器完成 Google 登入並使用 StudyMate。</string>
+</resources>

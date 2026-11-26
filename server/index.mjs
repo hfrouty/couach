@@ -6,7 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { createAccounts, normalizeEmail } from './accounts.mjs';
 import { createCampusAuth } from './campus-auth.mjs';
+import { createMatchmaking } from './matchmaking.mjs';
 import { createRecords } from './records.mjs';
+import { getCafesInBounds } from './taiwan-cafes.mjs';
+import { createWalkingRoutes } from './walking-routes.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const mime = {
@@ -22,7 +25,7 @@ const publicFiles = new Map([
   ['/admin', 'admin.html'],
   ['/admin/', 'admin.html'],
   ...[
-    'app.mjs', 'admin.mjs', 'campus-map.mjs', 'campus-places.mjs', 'campuses.mjs', 'matching.mjs', 'sample-data.mjs', 'study-tools.mjs', 'icons.mjs',
+    'app.mjs', 'admin.mjs', 'campus-map.mjs', 'campus-places.mjs', 'campus-cafes.mjs', 'campuses.mjs', 'matching.mjs', 'sample-data.mjs', 'study-tools.mjs', 'icons.mjs',
     'styles.css', 'tools.css', 'account.css', 'admin.css', 'campus-map.css', 'interior.css',
     'assets/icon.svg', 'assets/library-study.webp', 'assets/study-pop.webp', 'assets/study-banner.webp',
     'assets/campus-cafe.webp', 'assets/campus-mascot.webp', 'assets/paper-grain.webp',
@@ -48,9 +51,18 @@ function throttle(seconds) {
   });
 }
 
-function sendJson(response, status, body) {
-  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+function sendJson(response, status, body, cache = 'no-store') {
+  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': cache });
   response.end(JSON.stringify(body));
+}
+
+function cafeBounds(value) {
+  const parts = value?.split(',') ?? [];
+  const [south, west, north, east] = parts.map(Number);
+  if (parts.length !== 4 || parts.some(part => !part.trim()) || ![south, west, north, east].every(Number.isFinite)
+    || south < -90 || north > 90 || west < -180 || east > 180 || north <= south || east <= west
+    || north - south > 12 || east - west > 12) fail(400, '請提供有效的地圖範圍。');
+  return { south, west, north, east };
 }
 
 function redirect(response, location) {
@@ -91,8 +103,8 @@ function applyHeaders(response) {
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('X-Frame-Options', 'DENY');
   response.setHeader('Referrer-Policy', 'same-origin');
-  response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  response.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' https://tile.openstreetmap.org; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'");
+  response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(self)');
+  response.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' https://wmts.nlsc.gov.tw; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'");
 }
 
 function requireSameOrigin(request, railway) {
@@ -152,6 +164,8 @@ export function createStudyServer({
   db.exec('PRAGMA journal_mode = WAL');
   const accounts = createAccounts(db, { secureCookies: publicHttps, adminSetupToken });
   const records = createRecords(db);
+  const matchmaking = createMatchmaking(db);
+  const walkingRoutes = createWalkingRoutes();
   const throttleAuth = authLimiter(publicHttps);
   const files = new Map([...publicFiles].map(([route, file]) => [
     route, { body: readFileSync(join(root, file)), type: mime[file.split('.').at(-1)] },
@@ -205,6 +219,7 @@ export function createStudyServer({
       fail(409, '瀏覽器的登入帳號已切換。重新連線後，請在「我的帳號」確認電子郵件。', 'ACCOUNT_CHANGED');
     }
     if (method === 'POST' && route === '/api/auth/logout') {
+      if (account) matchmaking.logout(account);
       await accounts.logout(request, response);
       return { account: null };
     }
@@ -227,7 +242,13 @@ export function createStudyServer({
     }
     if (method === 'GET' && route === '/api/study') return records.state(account);
     if (method !== 'POST') fail(404, '找不到這個功能。');
-    if (route === '/api/study/sessions') {
+    if (route === '/api/study/match') {
+      const data = await readJson(request);
+      if (accounts.current(request)?.id !== account.id) fail(401, '請先登入 StudyMate。');
+      return matchmaking.handle(account, data);
+    } else if (route === '/api/study/walking-route') {
+      return walkingRoutes(await readJson(request));
+    } else if (route === '/api/study/sessions') {
       records.publish(account, await readJson(request));
     } else if (route === '/api/study/focus') {
       records.addFocus(account, await readJson(request));
@@ -254,8 +275,12 @@ export function createStudyServer({
     applyHeaders(response);
     try {
       const method = request.method;
-      const route = new URL(request.url, 'http://local').pathname;
+      const url = new URL(request.url, 'http://local');
+      const route = url.pathname;
       if (method === 'GET' && route === '/health') return sendJson(response, 200, { ok: true });
+      if (method === 'GET' && route === '/api/cafes') {
+        return sendJson(response, 200, { cafes: getCafesInBounds(cafeBounds(url.searchParams.get('bbox'))) }, 'public, max-age=3600');
+      }
       if (route === '/api/auth/campus/start' || route === '/api/auth/campus/callback') {
         return await handleCampusAuth(request, response, route);
       }

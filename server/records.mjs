@@ -64,6 +64,10 @@ function sessionData(row, viewerId) {
     note: row.note,
     own: row.host_id === viewerId,
     closed: row.closed_at !== null,
+    ...(row.is_quick_match ? {
+      quickMatch: true,
+      partner: { name: row.partner_name, department: row.partner_department },
+    } : {}),
   };
 }
 
@@ -94,7 +98,8 @@ export function createRecords(db) {
       starts_at INTEGER NOT NULL,
       ends_at INTEGER NOT NULL CHECK (ends_at > starts_at),
       note TEXT NOT NULL,
-      closed_at INTEGER
+      closed_at INTEGER,
+      is_quick_match INTEGER NOT NULL DEFAULT 0 CHECK (is_quick_match IN (0, 1))
     ) STRICT;
 
     CREATE INDEX IF NOT EXISTS study_sessions_host ON study_sessions(host_id);
@@ -145,6 +150,9 @@ export function createRecords(db) {
     if (!columns.some(column => column.name === 'campus_id')) {
       db.exec("ALTER TABLE study_sessions ADD COLUMN campus_id TEXT NOT NULL DEFAULT 'ncnu'");
     }
+    if (!columns.some(column => column.name === 'is_quick_match')) {
+      db.exec('ALTER TABLE study_sessions ADD COLUMN is_quick_match INTEGER NOT NULL DEFAULT 0 CHECK (is_quick_match IN (0, 1))');
+    }
   });
 
   const sessionColumns = `
@@ -161,14 +169,18 @@ export function createRecords(db) {
   const openSessions = db.prepare(`
     SELECT ${sessionColumns}
     FROM study_sessions s JOIN accounts host ON host.id = s.host_id
-    WHERE s.host_id = :account OR (s.closed_at IS NULL AND s.ends_at > :now AND ${notBlocked})
+    WHERE s.is_quick_match = 0
+      AND (s.host_id = :account OR (s.closed_at IS NULL AND s.ends_at > :now AND ${notBlocked}))
     ORDER BY s.starts_at, s.id
   `);
   const ownReservations = db.prepare(`
-    SELECT ${sessionColumns}, r.id AS reservation_id, r.status, r.updated_at
+    SELECT ${sessionColumns}, r.id AS reservation_id, r.status, r.updated_at,
+           CASE WHEN s.host_id = :account THEN guest.name ELSE host.name END AS partner_name,
+           CASE WHEN s.host_id = :account THEN guest.department ELSE host.department END AS partner_department
     FROM reservations r JOIN study_sessions s ON s.id = r.session_id
     JOIN accounts host ON host.id = s.host_id
-    WHERE r.applicant_id = ?
+    JOIN accounts guest ON guest.id = r.applicant_id
+    WHERE r.applicant_id = :account OR (s.is_quick_match = 1 AND s.host_id = :account)
     ORDER BY r.updated_at DESC, r.id
   `);
   const receivedReservations = db.prepare(`
@@ -176,7 +188,7 @@ export function createRecords(db) {
            r.status, r.updated_at AS updatedAt
     FROM study_sessions s JOIN reservations r ON r.session_id = s.id
     JOIN accounts student ON student.id = r.applicant_id
-    WHERE s.host_id = ?
+    WHERE s.host_id = ? AND s.is_quick_match = 0
     ORDER BY r.updated_at DESC, r.id
   `);
   const focusEntries = db.prepare('SELECT minutes, at FROM focus_entries WHERE account_id = ? ORDER BY at');
@@ -184,7 +196,10 @@ export function createRecords(db) {
     INSERT INTO study_sessions (id, host_id, title, subject, style, mode, campus_id, region, capacity, starts_at, ends_at, note)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const getSession = db.prepare('SELECT * FROM study_sessions WHERE id = ?');
+  const getSession = db.prepare(`
+    SELECT s.*, (SELECT applicant_id FROM reservations WHERE session_id = s.id AND s.is_quick_match = 1) AS match_partner_id
+    FROM study_sessions s WHERE s.id = ?
+  `);
   const editSession = db.prepare('UPDATE study_sessions SET title = ?, region = ?, note = ? WHERE id = ?');
   const findBlock = db.prepare(`
     SELECT 1 FROM study_blocks
@@ -199,7 +214,7 @@ export function createRecords(db) {
   `);
   const lookupApplication = db.prepare('SELECT id, status FROM reservations WHERE session_id = ? AND applicant_id = ?');
   const lookupReservation = db.prepare(`
-    SELECT r.*, s.host_id, s.capacity, s.starts_at, s.ends_at, s.closed_at
+    SELECT r.*, s.host_id, s.capacity, s.starts_at, s.ends_at, s.closed_at, s.is_quick_match
     FROM reservations r JOIN study_sessions s ON s.id = r.session_id
     WHERE r.id = ?
   `);
@@ -242,15 +257,18 @@ export function createRecords(db) {
   `);
   const reviewCounts = db.prepare(`
     SELECT
-      (SELECT COUNT(*) FROM study_sessions) AS sessions,
-      (SELECT COUNT(*) FROM reservations) AS reservations,
+      (SELECT COUNT(*) FROM study_sessions WHERE is_quick_match = 0) AS sessions,
+      (SELECT COUNT(*) FROM reservations r JOIN study_sessions s ON s.id = r.session_id WHERE s.is_quick_match = 0) AS reservations,
       (SELECT COUNT(*) FROM study_reports WHERE status = 'open') AS reports
   `);
   const reviewUpdate = db.prepare("UPDATE study_reports SET status = 'resolved' WHERE id = ?");
 
-  function sessionById(id) {
+  function sessionById(id, account, allowQuickMatch = false) {
     const session = typeof id === 'string' ? getSession.get(id) : null;
-    if (!session) fail(404, '找不到這場邀約。');
+    if (!session || (session.is_quick_match && (!allowQuickMatch
+      || (session.host_id !== account.id && session.match_partner_id !== account.id)))) {
+      fail(404, '找不到這場邀約。');
+    }
     return session;
   }
 
@@ -262,10 +280,14 @@ export function createRecords(db) {
     if (1 + participants.get(sessionId).count >= capacity) fail(409, '這場邀約已額滿。');
   }
 
-  function canTarget(account, session) {
-    if (session.host_id === account.id) fail(400, '這場邀約由你發起。');
-    if (blocked(account.id, session.host_id)) fail(404, '找不到這場邀約。');
-    if ((session.closed_at !== null || session.ends_at <= Date.now()) && !lookupApplication.get(session.id, account.id)) {
+  function partnerOf(session, accountId) {
+    return session.is_quick_match && session.host_id === accountId ? session.match_partner_id : session.host_id;
+  }
+
+  function canTarget(account, session, target = partnerOf(session, account.id)) {
+    if (target === account.id) fail(400, '這場邀約由你發起。');
+    if (blocked(account.id, target)) fail(404, '找不到這場邀約。');
+    if (!session.is_quick_match && (session.closed_at !== null || session.ends_at <= Date.now()) && !lookupApplication.get(session.id, account.id)) {
       fail(404, '找不到這場邀約。');
     }
   }
@@ -273,7 +295,7 @@ export function createRecords(db) {
   function state(account) {
     const sessions = openSessions.all({ account: account.id, now: Date.now() })
       .map(row => sessionData(row, account.id));
-    const reservations = Object.fromEntries(ownReservations.all(account.id).map(row => [
+    const reservations = Object.fromEntries(ownReservations.all({ account: account.id }).map(row => [
       row.id, {
         id: row.reservation_id,
         session: sessionData(row, account.id),
@@ -311,7 +333,7 @@ export function createRecords(db) {
 
   function edit(account, id, data) {
     return transaction(db, () => {
-      const session = sessionById(id);
+      const session = sessionById(id, account);
       if (session.host_id !== account.id) fail(403, '只有發起人可以編輯邀約。');
       if (session.closed_at !== null || session.ends_at <= Date.now()) fail(409, '這場邀約已結束，無法編輯。');
       const { title, note } = invitationDetails(data, session.note);
@@ -324,7 +346,7 @@ export function createRecords(db) {
 
   function close(account, id) {
     transaction(db, () => {
-      const session = sessionById(id);
+      const session = sessionById(id, account);
       if (session.host_id !== account.id) fail(403, '只有發起人可以關閉邀約。');
       if (session.closed_at !== null) return;
       const now = Date.now();
@@ -335,7 +357,7 @@ export function createRecords(db) {
 
   function requestJoin(account, id) {
     return transaction(db, () => {
-      const session = sessionById(id);
+      const session = sessionById(id, account);
       canTarget(account, session);
       const now = Date.now();
       if (session.closed_at !== null || session.ends_at <= now) fail(409, '這場邀約已結束。');
@@ -370,7 +392,7 @@ export function createRecords(db) {
           checkCapacity(entry.session_id, entry.capacity);
           break;
         case 'completed':
-          if (!applicant) fail(403, '只有參與者可以標記自己的共讀已完成。');
+          if (!applicant && !entry.is_quick_match) fail(403, '只有參與者可以標記自己的共讀已完成。');
           if (entry.status === status) return;
           if (entry.status !== 'confirmed' || now < entry.starts_at) fail(409, '共讀開始後才可標記完成。');
           break;
@@ -385,20 +407,21 @@ export function createRecords(db) {
 
   function report(account, id, reason) {
     if (!REASONS.includes(reason)) fail(400, '請選擇有效的檢舉原因。');
-    const session = sessionById(id);
+    const session = sessionById(id, account, true);
     canTarget(account, session);
     insertReport.run(randomUUID(), session.id, account.id, reason, Date.now());
   }
 
   function block(account, id) {
     transaction(db, () => {
-      const session = sessionById(id);
-      if (session.host_id === account.id) fail(400, '你無法封鎖自己。');
-      const alreadyBlocked = blocked(account.id, session.host_id);
+      const session = sessionById(id, account, true);
+      const target = partnerOf(session, account.id);
+      if (target === account.id) fail(400, '你無法封鎖自己。');
+      const alreadyBlocked = blocked(account.id, target);
       if (alreadyBlocked) return;
-      canTarget(account, session);
-      insertBlock.run(account.id, session.host_id);
-      cancelBlockedRequests.run({ now: Date.now(), first: account.id, second: session.host_id });
+      canTarget(account, session, target);
+      insertBlock.run(account.id, target);
+      cancelBlockedRequests.run({ now: Date.now(), first: account.id, second: target });
     });
   }
 

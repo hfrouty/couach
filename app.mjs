@@ -2,7 +2,10 @@ import { icon } from './icons.mjs';
 import { isLive, scoreSession } from './matching.mjs';
 import { SUBJECTS, STYLES, DEPARTMENTS, PLACES } from './sample-data.mjs';
 import { createStudyTools } from './study-tools.mjs';
-import { bindCampusMap, renderCampusMap, showCampusCafes, updateCampusMapSelection } from './campus-map.mjs';
+import {
+  bindCampusMap, clearCampusWalkingRoute, locateCampusPosition, renderCampusMap, showCampusCafes, showCampusWalkingRoute,
+  updateCampusMapSelection, viewCampusDestination, walkingDirectionsURL,
+} from './campus-map.mjs';
 import { getCampusPlaces } from './campus-places.mjs';
 import { CAMPUSES, DEFAULT_CAMPUS_ID, campusRegionNames, getCampus } from './campuses.mjs';
 
@@ -14,12 +17,32 @@ const timeZone = 'Asia/Taipei';
 const dayFormat = new Intl.DateTimeFormat('zh-TW', { timeZone, month: 'numeric', day: 'numeric' });
 const timeFormat = new Intl.DateTimeFormat('zh-TW', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 const onlineScopeNote = '線上共讀不限校園區域';
+const matchPollInterval = 4_000;
+const locationUploadInterval = 3_500;
+const activeMatchStatuses = new Set(['searching', 'found', 'waiting']);
 
 const initialFilters = { timing: 'all', subject: '', mode: '', region: '', style: '', department: '', cross: false, sort: 'score' };
 
 let state = emptyState();
 let filters = { ...initialFilters };
 let explorePane = 'list';
+let match = { status: 'idle' };
+let matchRegion = '';
+let matchMapView = '';
+let matchPoll;
+let matchClock;
+let matchLocationExpiry;
+let matchAutoShare = false;
+let matchLocationRequested = false;
+let matchLocationError = '';
+let matchDeviceFix;
+let matchLocationUpload;
+let matchLocationUploadTimer;
+let lastLocationUploadAt = 0;
+let matchCheck = null;
+let matchActing = false;
+let matchRevision = 0;
+let matchConnectionLost = false;
 let cleanup = () => {};
 let toastTimeout;
 let view = activeView();
@@ -36,6 +59,7 @@ let focusSync = null;
 const publishDrafts = new Map();
 const navigation = [
   ['explore', 'compass', '找讀書夥伴'],
+  ['match', 'bolt', '配對'],
   ['plans', 'calendar', '我的預約'],
   ['focus', 'timer', '專注計時'],
   ['places', 'pin', '讀書空間'],
@@ -116,6 +140,7 @@ function saveTimer() {
 }
 
 function bindAccount(account) {
+  resetMatch();
   state = { ...emptyState(), account, ...restoreTimer(account.id) };
   selectedCampusId = account.campusId ?? rememberedCampus(account.id);
   filters = { ...initialFilters };
@@ -124,6 +149,7 @@ function bindAccount(account) {
 }
 
 function resetAccount() {
+  resetMatch();
   state = emptyState();
   authMode = 'login';
   legacyLogin = false;
@@ -152,6 +178,8 @@ function switchCampus(id) {
   if (!getCampus(id) || id === selectedCampusId) return;
   selectedCampusId = id;
   filters.region = '';
+  matchRegion = '';
+  matchMapView = '';
   if (!state.account.campusId) {
     try {
       localStorage.setItem(`studymate:campus:${state.account.id}`, id);
@@ -253,7 +281,7 @@ const studyTools = createStudyTools({ read: () => state, save: saveFocus, icons:
 
 function activeView() {
   const hash = window.location.hash.slice(1);
-  return ['plans', 'focus', 'places'].includes(hash) ? hash : 'explore';
+  return ['match', 'plans', 'focus', 'places'].includes(hash) ? hash : 'explore';
 }
 
 function navigate(next, scroll = true) {
@@ -261,6 +289,8 @@ function navigate(next, scroll = true) {
   if (next === 'explore') explorePane = 'list';
   view = next;
   render();
+  if (next === 'match') void checkMatch();
+  else if (match.status === 'matched') scheduleMatchCheck();
   if (scroll) window.scrollTo(0, 0);
 }
 
@@ -291,12 +321,12 @@ function renderShell(content) {
         <img src="./assets/icon.svg" width="40" height="40" alt="">
         <span><strong>StudyMate<span>.</span></strong><small>校園共讀</small></span>
       </a>
-      <nav class="nav" aria-label="主要導覽">
-        ${navigation.map(([key, glyph, label]) => `<a href="#${key}" data-view="${key}"${key === view ? ' aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span></a>`).join('')}
+      <nav class="nav" aria-label="主要導覽"${state.account.role === 'student' ? ' data-match-nav' : ''}>
+        ${navigation.filter(([key]) => key !== 'match' || state.account.role === 'student').map(([key, glyph, label]) => `<a href="#${key}" data-view="${key}"${key === view ? ' aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span></a>`).join('')}
       </nav>
       <div class="sidebar-campus">
         <span class="sidebar-campus-icon">${icon('shield')}</span>
-        <div><strong>${escape(activeCampus().shortName)}校園</strong><small>位置僅顯示校園區域</small></div>
+        <div><strong>${escape(activeCampus().shortName)}校園</strong><small>即時位置由你決定是否分享</small></div>
       </div>
     </aside>
     <div class="workspace">
@@ -326,10 +356,19 @@ function render() {
     app.innerHTML = renderShell(`<section class="empty-state"><h1>無法載入共讀資料</h1><p>${escape(loadError)}</p>${button('重新整理資料', 'refresh')}</section>`);
     return;
   }
-  const content = view === 'explore' ? renderExplore() : view === 'plans' ? renderPlans() : studyTools.render(view);
+  if (view === 'match' && state.account.role !== 'student') view = 'explore';
+  const content = view === 'explore' ? renderExplore() : view === 'match' ? renderMatchPage() : view === 'plans' ? renderPlans() : studyTools.render(view);
   app.innerHTML = renderShell(content);
-  cleanup = view === 'explore' ? bindCampusMap(app) : studyTools.bind(app.querySelector('main'), view);
-  if (view === 'explore') updateExploreMap();
+  const openedMatchMap = view === 'match' && match.status === 'matched';
+  cleanup = view === 'explore' || openedMatchMap ? bindCampusMap(app) : studyTools.bind(app.querySelector('main'), view);
+  if (view === 'explore') {
+    updateExploreMap();
+  }
+  matchDeviceFix = undefined;
+  if (openedMatchMap) {
+    syncMatchMap(matchMapView);
+    if (matchLocationRequested || liveMatchLocation(match.myLocationShare)) locateCampusPosition(app, { recenter: false });
+  }
 }
 
 function passwordEntry(register, label) {
@@ -402,49 +441,37 @@ function renderAuth() {
     </main>`;
 }
 
+function renderCampusPicker() {
+  return `<label class="field campus-map-picker"><span>切換校園</span>
+    <span class="select-wrap"><select id="campus-select" aria-label="切換校園">${selectOptions(CAMPUSES.map(campus => [campus.id, campus.shortName]), selectedCampusId)}</select>${icon('chevron')}</span>
+  </label>`;
+}
+
 function renderExplore() {
   const now = Date.now();
   const campus = activeCampus();
   const campusPlaces = getCampusPlaces(campus.id);
-  const results = matchingSessions(now);
   const pending = Object.values(state.reservations).filter(item => item.status === 'pending' && !hasEnded(item.session)).length;
   const upcoming = Object.values(state.reservations).filter(item => item.status === 'confirmed' && !hasEnded(item.session)).length;
-  const publish = button('發起邀約', 'publish', { glyph: 'plus', variant: 'primary' });
-  const campusSelector = `<label class="field campus-map-picker"><span>切換校園</span>
-    <span class="select-wrap"><select id="campus-select" aria-label="切換校園">${selectOptions(CAMPUSES.map(campus => [campus.id, campus.shortName]), selectedCampusId)}</select>${icon('chevron')}</span>
-  </label>`;
+  const publish = button('發起邀約', 'publish', { glyph: 'plus' });
   return `
     <div class="explore-page">
       <div class="explore-toolbar">
-        ${campusSelector}
+        ${renderCampusPicker()}
         <button type="button" class="button button-secondary explore-pane-toggle" data-action="explore-pane"
-          aria-controls="explore-map" aria-expanded="${explorePane === 'map'}">${explorePane === 'map' ? '看邀約' : '看地圖'}</button>
+          aria-controls="explore-map" aria-expanded="${explorePane === 'map'}">${explorePaneLabel()}</button>
         <div class="explore-toolbar-actions">
-          ${button('即時找夥伴', 'find-now', { glyph: 'bolt' })}
+          ${button('定位我現在的位置', 'locate-explore', { glyph: 'compass', attrs: 'aria-controls="explore-map"' })}
           ${publish}
         </div>
       </div>
       <div class="explore-grid" data-pane="${explorePane}">
         <section class="discovery" id="explore-list" aria-labelledby="discovery-title">
           <header class="section-heading heading-with-action" id="discovery-heading">
-            <h1 id="discovery-title" tabindex="-1">探索讀書夥伴</h1>
+            <h1 id="discovery-title" tabindex="-1">找讀書夥伴</h1>
             ${button('重新整理', 'refresh', { glyph: 'rotate', variant: 'text', attrs: 'aria-label="重新整理邀約"' })}
           </header>
-          <div class="filter-bar">
-            <div class="segmented" role="group" aria-label="依時段篩選">
-              ${[['all', '全部'], ['now', '正在揪團'], ['later', '可預約']].map(([key, label]) => `<button type="button" data-action="timing" data-value="${key}" aria-pressed="${filters.timing === key}">${key === 'now' ? '<span class="dot"></span>' : ''}${label}</button>`).join('')}
-            </div>
-            ${button('篩選', 'filters', { glyph: 'sliders' })}
-          </div>
-          <div class="results-line">
-            <div class="results-summary">
-              <span id="result-count" aria-live="polite">${resultCount(results)}</span>
-              <div class="active-filters" id="active-filters" role="group" aria-label="已套用篩選">${renderFilterChips()}</div>
-            </div>
-            <label class="sort-control"><span class="sr-only">排序</span><select id="sort">${selectOptions([['score', '媒合度優先'], ['distance', '區域距離優先'], ['time', '時間優先']], filters.sort)}</select>${icon('chevron')}</label>
-          </div>
-          <p class="explore-online-note" data-online-scope${filters.mode === 'online' ? '' : ' hidden'}>${onlineScopeNote}</p>
-          <div id="results" class="session-grid explore-results">${renderResults(results)}</div>
+          ${renderInvitations(now)}
           ${renderCampusPicks(campus, campusPlaces.filter(place => place.kind === 'cafe').length)}
         </section>
         <div class="explore-map" id="explore-map">
@@ -468,6 +495,430 @@ function renderExplore() {
         </section>
       </aside>
     </div>`;
+}
+
+function renderInvitations(now = Date.now()) {
+  const results = matchingSessions(now);
+  return `
+    <div class="filter-bar">
+      <div class="segmented" role="group" aria-label="依時段篩選">
+        ${[['all', '全部'], ['now', '正在揪團'], ['later', '可預約']].map(([key, label]) => `<button type="button" data-action="timing" data-value="${key}" aria-pressed="${filters.timing === key}">${key === 'now' ? '<span class="dot"></span>' : ''}${label}</button>`).join('')}
+      </div>
+      ${button('篩選', 'filters', { glyph: 'sliders' })}
+    </div>
+    <div class="results-line">
+      <div class="results-summary">
+        <span id="result-count" aria-live="polite">${resultCount(results)}</span>
+        <div class="active-filters" id="active-filters" role="group" aria-label="已套用篩選">${renderFilterChips()}</div>
+      </div>
+      <label class="sort-control"><span class="sr-only">排序</span><select id="sort">${selectOptions([['score', '媒合度優先'], ['distance', '區域距離優先'], ['time', '時間優先']], filters.sort)}</select>${icon('chevron')}</label>
+    </div>
+    <p class="explore-online-note" data-online-scope${filters.mode === 'online' ? '' : ' hidden'}>${onlineScopeNote}</p>
+    <div id="results" class="session-grid explore-results">${renderResults(results)}</div>`;
+}
+
+function renderMatchPage() {
+  const matched = match.status === 'matched';
+  const campus = getCampus(match.campusId) ?? activeCampus();
+  const panel = `<div data-match-panel>${renderMatchPanel()}</div>`;
+  return `<div class="match-page">
+    <header class="section-heading heading-with-action match-page-heading">
+      <h1 id="match-page-title" tabindex="-1">${matched ? '配對地圖' : '配對'}</h1>
+      ${match.status === 'idle' || match.status === 'expired' ? renderCampusPicker() : ''}
+    </header>
+    <p class="sr-only" role="status" data-match-announcement></p>
+    ${matched ? `<div class="match-map-layout">
+      <div id="explore-map">${renderCampusMap({
+        campus, places: getCampusPlaces(campus.id), rendezvous: match.rendezvous, sharedCafe: match.cafe,
+        matchCoordinates: true, actions: `<div data-match-map-share>${renderMatchMapShare()}</div>`,
+      })}</div>
+      <div class="match-map-column">
+        <div data-match-location>${renderMatchLocation()}</div>
+        ${panel}
+      </div>
+    </div>` : `<div class="match-page-entry">${panel}</div>`}
+  </div>`;
+}
+
+function renderMatchPanel() {
+  const choosing = match.status === 'idle' || match.status === 'expired';
+  const campus = (!choosing && getCampus(match.campusId)) || activeCampus();
+  const regions = campus.regions.map(({ name }) => name);
+  const preferredRegion = (state.account.campusId ?? DEFAULT_CAMPUS_ID) === campus.id ? state.account.region : '';
+  const region = choosing ? matchRegion || (match.campusId === campus.id ? match.region : '') || preferredRegion : match.region;
+  const statuses = {
+    idle: ['與附近同學配對', '選擇你所在的校園區域，優先配對同校距離你最近、也正在等待的同學。'],
+    searching: ['正在尋找附近的學生', '找到附近的同學後，你們都可以選擇是否接受配對。'],
+    found: ['找到附近的同學', '雙方接受後，會開啟配對地圖。'],
+    waiting: ['等待對方確認', '對方也接受後，就會自動開啟配對地圖。'],
+    matched: ['配對成功！', '先到校園集合點碰面，再一起去咖啡廳。'],
+    expired: ['這次沒有配對成功', match.reason === 'search' ? '目前沒有配到附近的同學，可以再試一次。' : '這次配對已結束，可以再試一次。'],
+  };
+  const [title, description] = statuses[match.status];
+  const confirming = match.status === 'found' || match.status === 'waiting';
+  const searching = match.status === 'searching';
+  const isMatched = match.status === 'matched';
+  const timerLabel = searching ? '已等待' : '確認倒數';
+  return `<section class="match-panel" data-status="${match.status}" aria-labelledby="match-title">
+    <div class="match-panel-copy">
+      <p class="match-eyebrow">${icon('pin')} ${escape(campus.shortName)} · ${escape(!choosing && !isMatched && region ? region : campus.area)}</p>
+      <h2 id="match-title" class="match-title" tabindex="-1">${title}</h2>
+      <p class="match-description">${description}</p>
+      ${choosing ? `<form class="match-form" data-match-form>
+        <label class="field"><span>你在哪個區域？</span><span class="select-wrap">
+          <select name="region" required>${selectOptions(regions, region, '選擇校園區域')}</select>${icon('chevron')}
+        </span></label>
+        <label class="check-field match-position-opt-in"><input type="checkbox" name="shareLocation"${matchAutoShare ? ' checked' : ''}>配對成功後，分享我的即時位置（10 分鐘）</label>
+        <button type="submit" class="button button-lime">${icon('bolt')} ${match.status === 'expired' ? '重新配對' : '開始配對'}</button>
+        <p role="alert" data-request-error hidden></p>
+      </form>` : isMatched ? '' : `<div class="match-actions">
+        ${searching ? matchCommand('取消配對', 'cancel') : ''}
+        ${match.status === 'found' ? matchCommand('接受配對', 'accept', 'lime', 'check') : ''}
+        ${confirming ? matchCommand(match.status === 'found' ? '婉拒' : '取消配對', 'decline') : ''}
+      </div>`}
+      <p role="status" class="match-connection" data-match-connection${matchConnectionLost ? '' : ' hidden'}>連線暫時中斷，正在重新連線。</p>
+    </div>
+    <div class="match-visual">
+      <div class="match-radar" aria-hidden="true">
+        <span class="match-radar-ring"></span><span class="match-radar-ring"></span><span class="match-radar-ring"></span>
+        <span class="match-radar-sweep"></span><span class="match-radar-point"></span><span class="match-radar-point"></span>
+        <span class="match-radar-center">${icon(isMatched ? 'check' : confirming ? 'users' : 'pin')}</span>
+      </div>
+      ${searching || confirming ? `<p class="match-timer">${icon('clock')} <span>${timerLabel}</span> <span data-match-clock>${matchClockLabel()}</span></p>` : ''}
+    </div>
+    ${isMatched ? renderMatchItinerary() : ''}
+  </section>`;
+}
+
+function matchCommand(label, value, variant = 'glass', glyph) {
+  return button(label, 'match-command', { variant, glyph, attrs: `data-value="${value}" data-id="${escape(match.ticketId)}"` });
+}
+
+function matchMapButton(label, stop) {
+  return button(label, 'match-map', { glyph: 'map', variant: 'glass', attrs: `data-value="${stop}" aria-controls="explore-map"` });
+}
+
+function matchDirections(label, destination, origin) {
+  return `<a class="button button-lime" href="${escape(walkingDirectionsURL(destination, origin))}" target="_blank" rel="noopener noreferrer">${icon('compass')}${label}</a>`;
+}
+
+function liveMatchLocation(share) {
+  return share?.expiresAt > Date.now() ? share : undefined;
+}
+
+function renderMatchMapShare() {
+  const shared = liveMatchLocation(match.myLocationShare);
+  return `${shared ? matchCommand('停止分享位置', 'stop-location', 'secondary', 'close') : matchLocationRequested
+    ? matchCommand('取消定位分享', 'stop-location', 'secondary', 'close')
+    : button('分享即時位置（10 分鐘）', 'share-match-location', { glyph: 'pin', variant: 'primary' })}
+    ${matchLocationRequested ? '<p role="status">正在取得定位…</p>' : ''}
+    ${matchLocationError ? `<p role="alert">${escape(matchLocationError)}</p>` : ''}`;
+}
+
+function renderMatchLocation() {
+  const myShare = liveMatchLocation(match.myLocationShare);
+  const peerShare = liveMatchLocation(match.peerLocation);
+  return `<section class="match-location" aria-labelledby="match-location-title">
+    <h2 id="match-location-title">即時位置</h2>
+    <p class="match-stop-detail">開啟後，對方可在 10 分鐘內看到你移動中的位置。你可以隨時停止。</p>
+    ${myShare ? `<p class="match-shared-status">${icon('check')}分享中，有效至 ${timeFormat.format(myShare.expiresAt)}</p>` : ''}
+    ${peerShare ? `<div class="match-peer-location">
+      <p class="match-shared-status">${icon('pin')}對方的位置可查看至 ${timeFormat.format(peerShare.expiresAt)}</p>
+      <div class="match-stop-actions">
+        ${matchMapButton('在地圖上看對方', 'peer')}
+        <a class="button button-lime" data-match-peer-directions href="${escape(walkingDirectionsURL(peerShare.position))}" target="_blank" rel="noopener noreferrer">${icon('compass')}導航到對方位置</a>
+      </div>
+    </div>` : '<p class="match-stop-detail">等待對方分享即時位置。</p>'}
+  </section>`;
+}
+
+function renderMatchItinerary() {
+  const { rendezvous, cafe } = match;
+  const cafes = getCampusPlaces(match.campusId).filter(place => place.kind === 'cafe');
+  if (cafe && !cafes.some(place => place.id === cafe.id)) cafes.unshift(cafe);
+  return `<div class="match-itinerary">
+    ${rendezvous ? `<ol class="match-stops" aria-label="共讀路線">
+      <li class="match-stop">
+        <span class="match-stop-icon">${icon('pin')}</span>
+        <div class="match-stop-body">
+          <p class="match-stop-label">先到集合點</p>
+          <h3>${escape(rendezvous.name)}</h3>
+          ${rendezvous.region && rendezvous.region !== rendezvous.name ? `<p class="match-stop-detail">${escape(rendezvous.region)}</p>` : ''}
+          <div class="match-stop-actions">
+            ${matchMapButton('查看集合點路線', 'rendezvous')}
+            ${matchDirections('導航到集合點', rendezvous.position)}
+          </div>
+        </div>
+      </li>
+      <li class="match-stop">
+        <span class="match-stop-icon">${icon('cup')}</span>
+        <div class="match-stop-body">
+          <p class="match-stop-label">碰面後一起去咖啡廳</p>
+          ${cafe ? `<h3>${escape(cafe.name)}</h3>` : '<p class="match-stop-detail">兩人都會看到選定的咖啡廳。</p>'}
+          ${cafes.length ? `<form class="match-form match-cafe-form" data-match-cafe>
+            <label class="field"><span>共同目的地</span><span class="select-wrap">
+              <select name="cafeId" required>${selectOptions(cafes.map(place => [place.id, place.name]), cafe?.id, '選擇咖啡廳')}</select>${icon('chevron')}
+            </span></label>
+            <button type="submit" class="button button-glass">${icon('check')}選定咖啡廳</button>
+            <p role="alert" data-request-error hidden></p>
+          </form>` : '<p class="match-stop-detail">這所校園目前沒有咖啡廳資料。</p>'}
+          <div class="match-stop-actions">
+            ${cafes.length ? matchMapButton('看咖啡廳地圖', 'cafe') : ''}
+            ${cafe ? matchDirections('從集合點導航', cafe.position, rendezvous.position) : ''}
+          </div>
+        </div>
+      </li>
+    </ol>` : '<p class="match-stop-detail">暫時無法載入集合點，請重新整理後再試。</p>'}
+    ${matchCommand('返回配對', 'dismiss', 'glass', 'rotate')}
+  </div>`;
+}
+
+function matchClockLabel() {
+  const searching = match.status === 'searching';
+  const now = Date.now();
+  const seconds = Math.max(0, searching ? Math.floor((now - match.startedAt) / 1_000) : Math.ceil((match.expiresAt - now) / 1_000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+function resetMatch() {
+  matchRevision++;
+  clearTimeout(matchPoll);
+  clearInterval(matchClock);
+  clearTimeout(matchLocationExpiry);
+  clearTimeout(matchLocationUploadTimer);
+  match = { status: 'idle' };
+  matchRegion = '';
+  matchMapView = '';
+  matchCheck = null;
+  matchActing = false;
+  matchAutoShare = false;
+  matchLocationRequested = false;
+  matchLocationError = '';
+  matchDeviceFix = undefined;
+  matchLocationUpload = undefined;
+  lastLocationUploadAt = 0;
+  matchConnectionLost = false;
+}
+
+function renderMatchUpdate(focus = false) {
+  const container = app.querySelector('[data-match-panel]');
+  if (!container) return;
+  const moveFocus = focus || container.contains(document.activeElement);
+  container.innerHTML = renderMatchPanel();
+  if (moveFocus) container.querySelector('#match-title').focus({ preventScroll: true });
+}
+
+function renderMatchLocationUpdate() {
+  const container = app.querySelector('[data-match-location]');
+  if (container) container.innerHTML = renderMatchLocation();
+  const controls = app.querySelector('[data-match-map-share]');
+  if (controls) {
+    const focused = controls.contains(document.activeElement);
+    controls.innerHTML = renderMatchMapShare();
+    if (focused) controls.querySelector('button')?.focus({ preventScroll: true });
+  }
+}
+
+function applyMatch(next, focus = false) {
+  const previous = match;
+  next = {
+    ...next, myLocationShare: liveMatchLocation(next.myLocationShare), peerLocation: liveMatchLocation(next.peerLocation),
+  };
+  const changed = previous.status !== next.status || previous.ticketId !== next.ticketId;
+  const cafeChanged = previous.cafe?.id !== next.cafe?.id;
+  const peerChanged = previous.peerLocation?.expiresAt !== next.peerLocation?.expiresAt
+    || previous.peerLocation?.updatedAt !== next.peerLocation?.updatedAt
+    || previous.peerLocation?.position?.[0] !== next.peerLocation?.position?.[0]
+    || previous.peerLocation?.position?.[1] !== next.peerLocation?.position?.[1];
+  const sharingChanged = previous.myLocationShare?.expiresAt !== next.myLocationShare?.expiresAt;
+  match = next;
+  matchConnectionLost = false;
+  if (changed && next.status === 'matched') {
+    matchLocationRequested = matchAutoShare;
+    matchAutoShare = false;
+    matchLocationError = '';
+    lastLocationUploadAt = 0;
+  } else if (changed && ['idle', 'expired'].includes(next.status)) {
+    matchAutoShare = false;
+    matchLocationRequested = false;
+    matchLocationError = '';
+    clearTimeout(matchLocationUploadTimer);
+  }
+  if (next.myLocationShare) matchLocationRequested = false;
+  const mapChanged = changed && (previous.status === 'matched' || next.status === 'matched');
+  if (view === 'match' && mapChanged) {
+    render();
+    window.scrollTo(0, 0);
+    app.querySelector('#match-page-title')?.focus({ preventScroll: true });
+  } else {
+    if (changed || cafeChanged) renderMatchUpdate(focus);
+    if (sharingChanged || previous.peerLocation?.expiresAt !== next.peerLocation?.expiresAt) renderMatchLocationUpdate();
+    else if (peerChanged && next.peerLocation) {
+      const link = app.querySelector('[data-match-peer-directions]');
+      if (link) link.href = walkingDirectionsURL(next.peerLocation.position);
+    }
+  }
+  scheduleLocationExpiry();
+  const notice = app.querySelector('[data-match-connection]');
+  if (notice) notice.hidden = true;
+  if (previous.status === 'matched' && next.status !== 'matched') {
+    matchMapView = '';
+    clearCampusWalkingRoute(app);
+  } else if (cafeChanged && matchMapView === 'cafe') {
+    clearCampusWalkingRoute(app);
+  }
+  if (peerChanged && !next.peerLocation && matchMapView === 'peer') matchMapView = '';
+  if (view === 'match' && (cafeChanged || peerChanged || sharingChanged)) {
+    syncMatchMap();
+  }
+  if (cafeChanged && !changed && next.cafe) {
+    const announcement = app.querySelector('[data-match-announcement]');
+    if (announcement) announcement.textContent = `共同目的地已更新為${next.cafe.name}。`;
+  }
+  if (Boolean(previous.peerLocation) !== Boolean(next.peerLocation) && !changed) {
+    const announcement = app.querySelector('[data-match-announcement]');
+    if (announcement) announcement.textContent = next.peerLocation ? '對方已分享位置。' : '對方的分享位置已結束。';
+  }
+  if (!changed) return;
+
+  clearInterval(matchClock);
+  if (activeMatchStatuses.has(match.status)) {
+    matchClock = setInterval(() => {
+      const clock = app.querySelector('[data-match-clock]');
+      if (clock) clock.textContent = matchClockLabel();
+    }, 1_000);
+  }
+  const panel = app.querySelector('[data-match-panel]');
+  const panelVisible = Boolean(panel?.getClientRects().length);
+  if (panelVisible) {
+    const heading = panel.querySelector('#match-title');
+    app.querySelector('[data-match-announcement]').textContent = document.activeElement === heading ? '' : heading.textContent;
+  } else if (next.status === 'found') {
+    toast('找到附近的同學了，請回到「配對」確認。');
+  } else if (next.status === 'matched') {
+    toast('配對成功！開啟「配對」查看你們的地圖。');
+  }
+}
+
+function scheduleLocationExpiry() {
+  clearTimeout(matchLocationExpiry);
+  const expiresAt = Math.min(match.myLocationShare?.expiresAt ?? Infinity, match.peerLocation?.expiresAt ?? Infinity);
+  if (Number.isFinite(expiresAt)) matchLocationExpiry = setTimeout(() => applyMatch(match), Math.max(0, expiresAt - Date.now()));
+}
+
+function watchesMatchedResult() {
+  return match.status === 'matched' && view === 'match' && document.visibilityState === 'visible';
+}
+
+function scheduleMatchCheck(retry = false) {
+  clearTimeout(matchPoll);
+  if (activeMatchStatuses.has(match.status) || (retry && match.status !== 'matched')) {
+    matchPoll = setTimeout(checkMatch, matchPollInterval);
+  } else if (watchesMatchedResult()) {
+    matchPoll = setTimeout(checkMatch, matchPollInterval);
+  }
+}
+
+async function checkMatch() {
+  if (matchCheck || matchActing || state.account?.role !== 'student' || needsGoogleLink()) return;
+  const revision = matchRevision;
+  const request = api('/study/match', { method: 'POST', data: { action: 'check' } });
+  matchCheck = request;
+  let retry = false;
+  try {
+    const next = await request;
+    if (revision === matchRevision) applyMatch(next);
+  } catch {
+    if (revision === matchRevision && (activeMatchStatuses.has(match.status) || watchesMatchedResult())) {
+      matchConnectionLost = true;
+      const notice = app.querySelector('[data-match-connection]');
+      if (notice) notice.hidden = false;
+      retry = true;
+    }
+  } finally {
+    if (matchCheck === request) matchCheck = null;
+    if (revision === matchRevision) scheduleMatchCheck(retry);
+  }
+}
+
+async function changeMatch(data, focus = true) {
+  const revision = ++matchRevision;
+  matchActing = true;
+  clearTimeout(matchPoll);
+  let retry = false;
+  try {
+    await matchCheck?.catch(() => {});
+    if (revision !== matchRevision) return;
+    const next = await api('/study/match', { method: 'POST', data });
+    if (revision === matchRevision) applyMatch(next, focus);
+  } catch (error) {
+    retry = true;
+    throw error;
+  } finally {
+    if (revision === matchRevision) {
+      matchActing = false;
+      scheduleMatchCheck(retry);
+    }
+  }
+}
+
+function selectMatchCafe(cafeId) {
+  return changeMatch({ action: 'select-cafe', ticketId: match.ticketId, cafeId });
+}
+
+function shareMatchLocation() {
+  if (view !== 'match' || match.status !== 'matched' || matchLocationRequested) return;
+  if (!navigator.geolocation?.watchPosition) {
+    matchLocationError = '這個瀏覽器無法取得定位。';
+    renderMatchLocationUpdate();
+    return;
+  }
+  matchLocationRequested = true;
+  matchLocationError = '';
+  renderMatchLocationUpdate();
+  locateCampusPosition(app, { recenter: false });
+}
+
+function scheduleLocationUpload() {
+  clearTimeout(matchLocationUploadTimer);
+  if (!watchesMatchedResult() || !matchDeviceFix || (!matchLocationRequested && !liveMatchLocation(match.myLocationShare))) return;
+  matchLocationUploadTimer = setTimeout(uploadMatchLocation, Math.max(0, lastLocationUploadAt + locationUploadInterval - Date.now()));
+}
+
+async function uploadMatchLocation() {
+  const sharing = liveMatchLocation(match.myLocationShare);
+  const fix = matchDeviceFix;
+  if (!watchesMatchedResult() || !fix || (!matchLocationRequested && !sharing)) return;
+  if (matchLocationUpload || activeRequest || matchActing) {
+    matchLocationUploadTimer = setTimeout(uploadMatchLocation, 250);
+    return;
+  }
+  const ticketId = match.ticketId;
+  const position = fix.position.map(coordinate => Math.round(coordinate * 10_000) / 10_000);
+  lastLocationUploadAt = Date.now();
+  const request = changeMatch({ action: sharing ? 'update-location' : 'share-location', ticketId, position }, false);
+  matchLocationUpload = request;
+  try {
+    await request;
+  } catch (error) {
+    if (match.ticketId === ticketId && !sharing) {
+      matchLocationRequested = false;
+      matchLocationError = error.message;
+      renderMatchLocationUpdate();
+    }
+  } finally {
+    if (matchLocationUpload === request) matchLocationUpload = undefined;
+    if (match.ticketId === ticketId && matchDeviceFix !== fix) scheduleLocationUpload();
+  }
+}
+
+async function stopMatchLocation(data) {
+  matchLocationRequested = false;
+  clearTimeout(matchLocationUploadTimer);
+  await matchLocationUpload?.catch(() => {});
+  if (match.ticketId !== data.ticketId) return;
+  await changeMatch(data, false);
+  renderMatchLocationUpdate();
 }
 
 function renderCampusPicks(campus, cafeCount) {
@@ -544,7 +995,8 @@ function renderResults(results) {
     return `<div class="empty-state"><span class="tile-icon">${icon('search')}</span>
       <h3>${activeFilters().length ? '目前沒有符合條件的即時邀約' : '目前沒有其他人正在揪團'}</h3>
       <div class="empty-actions">
-        ${button('現在發起一團', 'publish', { glyph: 'plus', variant: 'primary', attrs: 'data-value="now"' })}
+        ${state.account.role === 'student' ? `<a class="button button-primary" href="#match" data-view="match">${icon('bolt')}前往配對</a>` : ''}
+        ${button('現在發起一團', 'publish', { glyph: 'plus', attrs: 'data-value="now"' })}
         ${button('看可預約時段', 'browse-upcoming')}
       </div>
     </div>`;
@@ -590,12 +1042,49 @@ function removeFilter(key) {
   (chips[Math.min(index, chips.length - 1)] ?? app.querySelector('[data-action="filters"]'))?.focus();
 }
 
+function explorePaneLabel() {
+  return explorePane === 'map' ? '看邀約' : '看地圖';
+}
+
 function showExplorePane(pane) {
   explorePane = pane;
   app.querySelector('.explore-grid').dataset.pane = pane;
   const toggle = app.querySelector('[data-action="explore-pane"]');
   toggle.setAttribute('aria-expanded', String(pane === 'map'));
-  toggle.textContent = pane === 'map' ? '看邀約' : '看地圖';
+  toggle.textContent = explorePaneLabel();
+}
+
+function matchMapDestination() {
+  return {
+    rendezvous: match.rendezvous, cafe: match.cafe, peerLocation: liveMatchLocation(match.peerLocation),
+    myLocationShare: liveMatchLocation(match.myLocationShare), localPosition: matchDeviceFix?.position,
+    livePair: true,
+  };
+}
+
+function syncMatchMap(focus) {
+  if (view !== 'match' || match.status !== 'matched') return null;
+  return viewCampusDestination(app, { ...matchMapDestination(), focus, cafeOnly: focus === 'cafe' });
+}
+
+async function showMatchDestination(focus) {
+  const { campusId, region, rendezvous, cafe } = match;
+  if (!rendezvous || (focus === 'peer' && !liveMatchLocation(match.peerLocation))) return;
+  matchMapView = focus;
+  clearCampusWalkingRoute(app);
+  const viewport = syncMatchMap(focus);
+  app.querySelector('#explore-map').scrollIntoView({ block: 'start' });
+  viewport?.focus({ preventScroll: true });
+  if (focus === 'peer') return;
+  const route = focus === 'rendezvous'
+    ? region && region !== rendezvous.region && { campusId, fromRegion: region, toRegion: rendezvous.region }
+    : cafe && { campusId, fromRegion: rendezvous.region, cafeId: cafe.id };
+  if (!route) return;
+  try {
+    await showCampusWalkingRoute(app, { ...route, accountId: state.account?.id });
+  } catch {
+    toast('暫時無法預覽步行路線，可以使用 Google 地圖導航。');
+  }
 }
 
 function updateExploreMap(now = Date.now()) {
@@ -637,7 +1126,8 @@ function formatSlot(session) {
 
 function sessionFacts(session, distance, showCampus = false) {
   const campus = showCampus ? getCampus(session.campusId ?? DEFAULT_CAMPUS_ID)?.shortName : '';
-  const place = session.mode === 'online' ? '線上共讀' : session.region;
+  const venue = session.quickMatch ? getCampus(session.campusId)?.regions.find(({ name }) => name === session.region)?.label : null;
+  const place = session.mode === 'online' ? '線上共讀' : venue ?? session.region;
   const where = campus ? `${campus} · ${place}` : place;
   const details = distance === 0 ? ' · 同一區域' : distance ? ` · 約 ${distance} 公尺` : '';
   return `
@@ -692,10 +1182,14 @@ function renderPlans() {
           const expired = hasEnded(session);
           return `<article class="plan-item">
             <span class="status-pill ${status === 'confirmed' ? 'status-live' : 'status-later'}">${status === 'pending' && expired ? '邀約已結束' : statusLabels[status]}</span>
-            <h3>${escape(session.title)}</h3>${sessionFacts(session, null, true)}
+            <h3>${escape(session.title)}</h3>
+            ${session.quickMatch ? `<p class="incoming-name">${escape([session.partner.name, session.partner.department].filter(Boolean).join(' · '))}</p>` : ''}
+            ${sessionFacts(session, null, true)}
             <div class="plan-actions">
               ${status === 'confirmed' && Date.now() >= Date.parse(session.start) ? button('標記完成', 'complete', { glyph: 'check', variant: 'primary', attrs }) : ''}
               ${(status === 'pending' || status === 'confirmed') && !expired ? button('取消預約', 'cancel', { attrs }) : ''}
+              ${session.quickMatch ? button('檢舉', 'report', { glyph: 'flag', variant: 'text', attrs: `data-id="${escape(session.id)}"` }) : ''}
+              ${session.quickMatch ? button('封鎖夥伴', 'block', { variant: 'text', attrs: `data-id="${escape(session.id)}"` }) : ''}
             </div>
           </article>`;
         }).join('') : '<p class="empty-state">加入一場邀約後，你可以在這裡查看進度。</p>'}
@@ -872,7 +1366,7 @@ function showInviteEdit(id) {
 }
 
 function getSession(id) {
-  return state.sessions.find(session => session.id === id);
+  return state.sessions.find(session => session.id === id) ?? state.reservations[id]?.session;
 }
 
 function showDetails(id) {
@@ -899,11 +1393,12 @@ function showDetails(id) {
 
 function showSafety(id, action) {
   const session = getSession(id);
-  if (!session || isOwnSession(session)) return;
+  if (!session || (!session.quickMatch && isOwnSession(session))) return;
   const report = action === 'report';
-  showDialog(report ? '檢舉邀約' : '封鎖夥伴', `
+  const blockMessage = session.quickMatch ? `封鎖 ${escape(session.partner.name)} 後，你們將無法再配對。` : `封鎖後，${escape(session.host)} 的邀約會從探索頁隱藏。`;
+  showDialog(report ? (session.quickMatch ? '檢舉共讀夥伴' : '檢舉邀約') : '封鎖夥伴', `
     <form class="dialog-form" data-form="${action}" data-id="${escape(id)}">
-      ${report ? selectField('reason', '檢舉原因', ['不當內容', '可疑邀約', '騷擾或安全疑慮', '其他'], '不當內容') : `<p>封鎖後，${escape(session.host)} 的邀約會從探索頁隱藏。</p>`}
+      ${report ? selectField('reason', '檢舉原因', ['不當內容', '可疑邀約', '騷擾或安全疑慮', '其他'], '不當內容') : `<p>${blockMessage}</p>`}
       <p class="account-error" data-request-error role="alert" hidden></p>
       <button class="button button-primary" type="submit">${report ? '送出檢舉' : '確認封鎖'}</button>
     </form>`, report ? '檢舉會交給管理員處理。' : '');
@@ -1025,6 +1520,7 @@ async function bootstrap() {
   } finally {
     loading = false;
     render();
+    void checkMatch();
   }
 }
 
@@ -1081,12 +1577,25 @@ document.addEventListener('click', event => {
         toast('資料已更新。');
       });
       break;
-    case 'find-now':
-      filters.timing = 'now';
-      showExplorePane('list');
-      refreshResults();
-      document.querySelector('#discovery-title').focus();
-      document.querySelector('#discovery-heading').scrollIntoView({ block: 'start' });
+    case 'match-command':
+      void runRequest(control, () => value === 'stop-location'
+        ? stopMatchLocation({ action: value, ticketId: id })
+        : changeMatch({ action: value, ticketId: id }));
+      break;
+    case 'share-match-location':
+      shareMatchLocation();
+      break;
+    case 'match-map':
+      void showMatchDestination(value);
+      break;
+    case 'choose-match-cafe':
+      void runRequest(control, async () => {
+        await selectMatchCafe(value);
+        if (match.cafe?.id === value) {
+          toast(`共同目的地已更新為${match.cafe.name}。`);
+          void showMatchDestination('cafe');
+        }
+      });
       break;
     case 'browse-upcoming':
       filters.timing = 'later';
@@ -1096,6 +1605,13 @@ document.addEventListener('click', event => {
     case 'explore-pane':
       showExplorePane(explorePane === 'list' ? 'map' : 'list');
       break;
+    case 'locate-explore': {
+      showExplorePane('map');
+      const viewport = locateCampusPosition(app);
+      app.querySelector('.explore-toolbar').scrollIntoView({ block: 'start' });
+      viewport?.focus({ preventScroll: true });
+      break;
+    }
     case 'campus-cafes':
       showExplorePane('map');
       if (showCampusCafes(app)) app.querySelector('.explore-toolbar').scrollIntoView({ block: 'start' });
@@ -1108,6 +1624,7 @@ document.addEventListener('click', event => {
       removeFilter(value);
       break;
     case 'map-region':
+      if (view !== 'explore') break;
       if (value && filters.mode === 'online') {
         toast(onlineScopeNote);
         break;
@@ -1154,6 +1671,14 @@ document.addEventListener('input', event => {
 
 document.addEventListener('change', event => {
   const { target } = event;
+  if (target.form?.hasAttribute('data-match-form') && target.name === 'shareLocation') {
+    matchAutoShare = target.checked;
+    return;
+  }
+  if (target.form?.hasAttribute('data-match-form') && target.name === 'region') {
+    matchRegion = target.value;
+    return;
+  }
   if (target.id === 'campus-select') {
     if (!activeRequest) switchCampus(target.value);
     else target.value = selectedCampusId;
@@ -1177,6 +1702,21 @@ document.addEventListener('change', event => {
 
 app.addEventListener('submit', event => {
   const form = event.target;
+  if (form.hasAttribute('data-match-form')) {
+    event.preventDefault();
+    if (activeRequest) return;
+    const data = new FormData(form);
+    matchAutoShare = data.has('shareLocation');
+    const region = data.get('region');
+    void runRequest(event.submitter, () => changeMatch({ action: 'start', campusId: selectedCampusId, region }), form.querySelector('[data-request-error]'));
+    return;
+  }
+  if (form.hasAttribute('data-match-cafe')) {
+    event.preventDefault();
+    const cafeId = new FormData(form).get('cafeId');
+    void runRequest(event.submitter, () => selectMatchCafe(cafeId), form.querySelector('[data-request-error]'));
+    return;
+  }
   const action = form.dataset.auth;
   if (!action) return;
   event.preventDefault();
@@ -1194,6 +1734,7 @@ app.addEventListener('submit', event => {
       loadError = error.message;
     }
     render();
+    void checkMatch();
     app.querySelector('main').focus({ preventScroll: true });
   }, form.querySelector('[data-request-error]'));
 });
@@ -1243,12 +1784,15 @@ async function submitDialog(form, data) {
       toast('已送出加入申請，等待對方確認。');
       break;
     case 'report':
-    case 'block':
+    case 'block': {
+      const quickMatch = getSession(id)?.quickMatch;
       if (!await mutateStudy(`/study/sessions/${encodeURIComponent(id)}/${action}`, { reason: data.get('reason') })) return;
       dialog.close();
-      refreshResults();
-      toast(action === 'report' ? '已送出檢舉。' : '已隱藏該夥伴的邀約。');
+      if (quickMatch) render();
+      else refreshResults();
+      toast(action === 'report' ? '已送出檢舉。' : quickMatch ? '已封鎖這位夥伴。' : '已隱藏該夥伴的邀約。');
       break;
+    }
   }
 }
 
@@ -1259,12 +1803,53 @@ window.addEventListener('hashchange', () => {
   view = next;
   if (dialog.open) dialog.close();
   render();
+  if (next === 'match') void checkMatch();
+  else if (match.status === 'matched') scheduleMatchCheck();
   window.scrollTo(0, 0);
   void updateViewData();
 });
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && !activeRequest && !loading) void updateViewData();
+  if (document.visibilityState === 'visible' && !activeRequest && !loading) {
+    void updateViewData();
+    void checkMatch();
+    scheduleLocationUpload();
+  } else if (match.status === 'matched') {
+    scheduleMatchCheck();
+    clearTimeout(matchLocationUploadTimer);
+  }
+});
+
+app.addEventListener('studymate:device-location', event => {
+  if (view !== 'match' || match.status !== 'matched') return;
+  const position = event.detail?.position;
+  if (!Array.isArray(position) || position.length !== 2 || !position.every(Number.isFinite)) return;
+  matchDeviceFix = event.detail;
+  if (matchLocationError) {
+    matchLocationError = '';
+    renderMatchLocationUpdate();
+  }
+  syncMatchMap();
+  scheduleLocationUpload();
+});
+
+app.addEventListener('studymate:device-location-error', event => {
+  if (view !== 'match' || (!matchLocationRequested && !liveMatchLocation(match.myLocationShare))) return;
+  const denied = event.detail?.code === 1;
+  matchLocationError = denied ? '請在瀏覽器允許定位後再試。' : '暫時無法取得定位，正在等待訊號。';
+  if (denied) stopDeviceShare();
+  renderMatchLocationUpdate();
+});
+
+function stopDeviceShare() {
+  const needsStop = matchLocationRequested || liveMatchLocation(match.myLocationShare) || matchLocationUpload;
+  matchDeviceFix = undefined;
+  syncMatchMap();
+  if (needsStop) void stopMatchLocation({ action: 'stop-location', ticketId: match.ticketId }).catch(error => toast(error.message));
+}
+
+app.addEventListener('studymate:device-location-stopped', () => {
+  if (view === 'match' && match.status === 'matched') stopDeviceShare();
 });
 
 void bootstrap();

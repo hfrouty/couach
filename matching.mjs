@@ -21,19 +21,21 @@ function timeOverlap(session, preferences) {
   return overlap > 0 ? overlap / (requestedEnd - requestedStart) : 0;
 }
 
+// Estimate the straight-line distance between public area markers in meters.
+export function markerDistance(first, second) {
+  const latitude = (first[0] + second[0]) * Math.PI / 360;
+  const north = (first[0] - second[0]) * 111_320;
+  const east = (first[1] - second[1]) * 111_320 * Math.cos(latitude);
+  return Math.hypot(north, east);
+}
+
 function distanceBetween(session, preferredRegion) {
   if (session.mode === "online" || !preferredRegion) return null;
 
   const campus = getCampus(session.campusId ?? DEFAULT_CAMPUS_ID);
   const preferred = campus?.regions.find(region => region.name === preferredRegion)?.position;
   const actual = campus?.regions.find(region => region.name === session.region)?.position;
-  if (!preferred || !actual) return null;
-
-  // Estimate the straight-line distance between public area markers.
-  const latitude = (preferred[0] + actual[0]) * Math.PI / 360;
-  const north = (preferred[0] - actual[0]) * 111_320;
-  const east = (preferred[1] - actual[1]) * 111_320 * Math.cos(latitude);
-  return Math.round(Math.hypot(north, east) / 50) * 50;
+  return preferred && actual ? Math.round(markerDistance(preferred, actual) / 50) * 50 : null;
 }
 
 function locationFit(session, preferredRegion, distance) {

@@ -1,4 +1,6 @@
-// 校方與店家資料用於核對地點，註記的 OpenStreetMap 圖徵用於定位。
+import { campusCafes } from './campus-cafes.mjs';
+
+// 下列地點經校方、店家或 OpenStreetMap 資料核對。
 const campusPlaces = {
   ncnu: [
     // OpenStreetMap node/5241780483
@@ -64,6 +66,13 @@ const campusPlaces = {
   ],
 };
 
+const placesByCampus = new Map(Object.entries(campusPlaces).map(([campusId, places]) => [
+  campusId,
+  places.concat((campusCafes[campusId] ?? []).map(([id, name, latitude, longitude]) => ({
+    id, name, kind: 'cafe', position: [latitude, longitude],
+  }))),
+]));
+
 export function getCampusPlaces(campusId) {
-  return campusPlaces[campusId] ?? [];
+  return placesByCampus.get(campusId) ?? [];
 }

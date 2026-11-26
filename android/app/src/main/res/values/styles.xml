@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="paper">#F7F6F1</color>
+    <color name="ink">#252827</color>
+    <color name="teal">#105D5C</color>
+    <color name="book_yellow">#F9D463</color>
+
+    <style name="Theme.StudyMate" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorAccent">@color/teal</item>
+        <item name="android:windowBackground">@color/paper</item>
+        <item name="android:statusBarColor">@color/paper</item>
+        <item name="android:navigationBarColor">@color/paper</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>
