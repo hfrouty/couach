@@ -6,40 +6,30 @@
 }
 
 .account-welcome {
-  position: relative;
-  isolation: isolate;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  min-height: max(620px, 100%);
-  overflow: hidden;
-  padding: clamp(2rem, 4.8vw, 5rem);
-  color: #fff;
-  background:
-    radial-gradient(circle at 82% 9%, transparent 2.1rem, #ffffff45 2.15rem 2.28rem, transparent 2.32rem),
-    radial-gradient(circle at 12% 43%, transparent 1rem, #9eeaff94 1.06rem 1.15rem, transparent 1.2rem),
-    radial-gradient(circle at 93% 54%, transparent 3.4rem, #9eeaff77 3.48rem 3.65rem, transparent 3.72rem),
-    linear-gradient(155deg, #076ed4 0%, #0c82ed 47%, #123da8 100%);
+  display: grid;
+  grid-template-rows: auto auto auto;
+  align-content: center;
+  gap: clamp(1.2rem, 3.6vh, 2.5rem);
+  min-width: 0;
+  padding: clamp(1.65rem, 4.4vw, 4.25rem);
+  border-right: 1px solid var(--border);
+  color: var(--ink);
 }
 
 .account-welcome::before {
   content: "";
-  position: absolute;
-  z-index: -1;
-  inset: 0;
-  background: url("./assets/study-pop.webp") 52% 43% / min(100%, 43rem) auto no-repeat;
-  mask-image: radial-gradient(ellipse 49% 49% at 51% 43%, #000 54%, transparent 100%);
-}
-
-.account-welcome::after {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  inset: 46% 0 0;
-  background: linear-gradient(180deg, transparent, #1244bca3 62%, #153faa 100%);
+  grid-row: 2;
+  min-height: clamp(15rem, 38vh, 25rem);
+  border: 3px solid var(--line);
+  border-radius: 18px;
+  background:
+    url("./assets/study-pop.webp") left center / 71% auto no-repeat,
+    repeating-linear-gradient(135deg, #398e8e 0 16px, #58a3a2 16px 32px);
+  box-shadow: 4px 4px 0 var(--line);
 }
 
 .account-brand {
+  grid-row: 1;
   display: flex;
   align-items: center;
   gap: .85rem;
@@ -54,32 +44,36 @@
 }
 
 .account-brand strong span,
-.account-welcome h1 em { color: var(--yellow); }
+.account-welcome .hero-campus { color: var(--teal-deep); }
 
 .account-brand small {
-  color: #ddf7ff;
+  color: var(--muted);
   font-size: .79rem;
   font-weight: 650;
   letter-spacing: .08em;
 }
 
-.account-welcome-copy { padding-top: clamp(11rem, 24vh, 20rem); }
+.account-welcome-copy { grid-row: 3; }
 
 .account-welcome h1 {
   margin: 1rem 0;
-  font-size: clamp(2.05rem, 4.75vw, 4.8rem);
+  font-size: clamp(2rem, 3.75vw, 4.25rem);
   font-weight: 900;
   line-height: 1.16;
   letter-spacing: -.05em;
   overflow-wrap: anywhere;
-  text-shadow: 0 .055em #12327780;
 }
 
-.account-welcome h1 em { font-style: normal; }
+.account-welcome h1 em {
+  background: linear-gradient(transparent 65%, var(--yellow) 65% 92%, transparent 92%);
+  font-style: normal;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
 
 .account-welcome-copy > p:last-child {
   max-width: 27rem;
-  color: #e5f6ff;
+  color: var(--muted);
   font-size: clamp(.95rem, 1.55vw, 1.17rem);
 }
 
@@ -87,20 +81,15 @@
   display: grid;
   place-items: center;
   padding: clamp(1rem, 4.8vw, 4rem);
-  background:
-    radial-gradient(circle at 84% 15%, transparent 2.5rem, #a0e5fa80 2.56rem 2.68rem, transparent 2.74rem),
-    radial-gradient(circle at 95% 8%, #b9f0fc 0 .55rem, transparent .6rem),
-    radial-gradient(circle at 16% 76%, transparent 3.3rem, #acecfc80 3.4rem 3.55rem, transparent 3.64rem),
-    linear-gradient(157deg, #ecfbff 10%, #e2f6ff 68%, #d9f6fb);
 }
 
 .account-card {
   width: min(100%, 420px);
   padding: clamp(1.3rem, 3.2vw, 2.35rem);
-  border: 1px solid #afd9f4;
-  border-radius: 28px;
-  background: #fff;
-  box-shadow: 0 6px 0 #b8e3f7, 0 20px 46px #1760b21a;
+  border: 2px solid var(--line);
+  border-radius: var(--radius);
+  background: #fffefa;
+  box-shadow: 4px 4px 0 var(--line);
 }
 
 .account-card h2 {
@@ -132,7 +121,7 @@
   font-size: .9rem;
 }
 
-.account-switch .button { color: var(--moss); }
+.account-switch .button { color: var(--teal-deep); }
 
 .account-setup-link {
   display: block;
@@ -158,7 +147,7 @@
 .campus-entry-notice { margin-bottom: .85rem; }
 .campus-linked-account {
   margin-bottom: .85rem;
-  color: var(--moss);
+  color: var(--teal-deep);
   font-weight: 650;
 }
 
@@ -184,24 +173,27 @@ button:disabled { cursor: wait; opacity: .62; }
 @media (max-width: 760px) {
   .account-layout { grid-template-columns: minmax(0, 1fr); }
   .account-welcome {
-    justify-content: flex-start;
-    gap: 2.3rem;
-    min-height: auto;
-    padding: 1.35rem clamp(1.1rem, 6vw, 3rem) 1.85rem;
+    grid-template-columns: minmax(0, 1fr) clamp(5.3rem, 31vw, 10rem);
+    grid-template-rows: auto auto;
+    align-items: center;
+    gap: .85rem 1rem;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 1.15rem 1rem 1.35rem;
   }
+  .account-brand { grid-column: 1 / -1; }
   .account-welcome::before {
-    background-position: right -4rem top 23%;
-    background-size: clamp(16rem, 55vw, 26rem) auto;
-    mask-image: linear-gradient(90deg, transparent 50%, #000c 78%, #000 100%);
+    grid-column: 2;
+    min-height: 0;
+    aspect-ratio: 1;
+    border-width: 2px;
+    border-radius: 12px;
+    background-size: 100% auto, auto;
+    box-shadow: var(--panel-shadow);
   }
-  .account-welcome::after {
-    inset: 0;
-    background:
-      linear-gradient(90deg, #125ac5db 4%, #125ac59c 47%, transparent 100%),
-      linear-gradient(0deg, #0d55bde3, transparent 36%);
-  }
-  .account-welcome-copy { padding: 0; }
-  .account-welcome h1 { margin: .65rem 0; font-size: clamp(1.78rem, 8vw, 3.5rem); }
+  .account-welcome-copy { grid-row: 2; grid-column: 1; }
+  .account-welcome h1 { margin: .45rem 0; font-size: clamp(1.25rem, 5.6vw, 2.65rem); }
+  .account-welcome-copy > p:last-child { font-size: .875rem; }
   .account-main { align-items: start; padding: 1.35rem 1rem 2.1rem; }
   .account-setup-link { margin-top: .6rem; }
 }

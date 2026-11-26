@@ -4,7 +4,7 @@
 
 .tool-heading h1 {
   margin: 0 0 .45rem;
-  color: var(--blue-deep);
+  color: var(--ink);
   font-size: clamp(1.85rem, 3vw, 2.5rem);
   line-height: 1.2;
   letter-spacing: -.035em;
@@ -51,11 +51,8 @@
   align-content: center;
   text-align: center;
   background:
-    radial-gradient(circle at 11% 24%, #d7f6ff 0 19px, transparent 20px),
-    radial-gradient(circle at 19% 13%, #ebf8ff 0 8px, transparent 9px),
-    radial-gradient(circle at 90% 77%, #dcf7ff 0 27px, transparent 28px),
-    radial-gradient(ellipse at 50% 64%, #daf6ff, transparent 72%),
-    #fff;
+    repeating-linear-gradient(135deg, var(--aqua) 0 6px, transparent 6px 12px) right 1rem top 1rem / 4.5rem .4rem no-repeat,
+    #fffefb;
 }
 
 .focus-timer h2,
@@ -66,7 +63,7 @@
 }
 
 .focus-timer h2 .icon {
-  color: var(--blue);
+  color: var(--teal);
 }
 
 .timer-presets {
@@ -79,10 +76,11 @@
 
 .timer-presets button {
   padding: .48rem .72rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
   background: #fff;
-  color: var(--blue-deep);
+  box-shadow: 1px 1px 0 var(--line);
+  color: var(--teal-deep);
   font: inherit;
   font-size: .875rem;
   font-weight: 650;
@@ -90,18 +88,17 @@
 }
 
 .timer-presets button:hover {
-  border-color: #86bafa;
   background: var(--wash);
 }
 
 .timer-presets button[aria-pressed='true'] {
-  border-color: var(--blue-deep);
   background: var(--yellow);
+  color: var(--ink);
 }
 
 .timer-display {
   margin: 1rem 0 1.15rem;
-  color: var(--blue-deep);
+  color: var(--ink);
   font-size: clamp(3.9rem, 10vw, 6.2rem);
   font-weight: 800;
   font-variant-numeric: tabular-nums;
@@ -132,17 +129,14 @@
   display: grid;
   padding: .85rem 1rem;
   border: 1px solid var(--border);
-  border-radius: 1rem;
+  border-radius: 6px;
   background: var(--wash);
 }
 
-.focus-totals > div:nth-child(2) {
-  border-color: #f2e6b1;
-  background: #fff8dd;
-}
+.focus-totals > div:nth-child(2) { background: #fff7de; }
 
 .focus-totals strong {
-  color: var(--blue-deep);
+  color: var(--ink);
   font-size: clamp(1.65rem, 4vw, 2.1rem);
   font-weight: 750;
   font-variant-numeric: tabular-nums;
@@ -197,9 +191,9 @@
   width: 1.5rem;
   height: 1.5rem;
   place-items: center;
-  border-radius: 50%;
-  background: #d9f6ff;
-  color: var(--blue-deep);
+  border-radius: 4px;
+  background: var(--wash);
+  color: var(--teal-deep);
 }
 
 .focus-history-icon .icon {
@@ -218,42 +212,37 @@
 }
 
 .place-visual {
-  --place-wash: #d9f8ff;
-  --place-accent: #a9edff;
+  --place-wash: var(--wash);
+  --place-accent: var(--aqua);
   display: grid;
-  min-height: 7.35rem;
+  min-height: 6.6rem;
+  margin: .75rem .75rem 0;
   place-items: center;
+  border: 3px solid var(--line);
+  border-radius: 12px;
   background:
-    radial-gradient(circle at 19% 35%, #ffffffad 0 11px, transparent 12px),
-    radial-gradient(circle at 24% 62%, #ffffff82 0 5px, transparent 6px),
-    radial-gradient(circle at 80% 65%, #ffffff96 0 17px, transparent 18px),
-    linear-gradient(125deg, var(--place-wash), var(--place-accent));
-  color: var(--blue-deep);
+    linear-gradient(110deg, var(--place-wash) 0 54%, transparent 54%),
+    repeating-linear-gradient(135deg, var(--place-accent) 0 8px, var(--paper) 8px 18px);
+  color: var(--teal-deep);
 }
 
 .place-card:nth-child(2) .place-visual {
-  --place-wash: #e4f2ff;
-  --place-accent: #b9d7ff;
+  --place-wash: #dfebe5;
+  --place-accent: #85bbb2;
 }
 
-.place-card:nth-child(3) .place-visual {
-  --place-wash: #fff8d8;
-  --place-accent: #ffe792;
-}
+.place-card:nth-child(3) .place-visual { --place-wash: #fbedbc; }
 
-.place-card:nth-child(4) .place-visual {
-  --place-wash: #fff4fa;
-  --place-accent: var(--pink);
-}
+.place-card:nth-child(4) .place-visual { --place-wash: var(--pink); }
 
 .place-visual .icon {
   width: 3.4rem;
   height: 3.4rem;
   padding: .75rem;
-  border: 1px solid #ffffffba;
-  border-radius: 50%;
-  background: #ffffffe0;
-  box-shadow: 0 3px 0 #17357016;
+  border: 2px solid var(--line);
+  border-radius: 8px;
+  background: #fffefb;
+  box-shadow: 2px 2px 0 var(--line);
 }
 
 .place-copy {
