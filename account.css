@@ -144,6 +144,24 @@
 }
 
 .account-email { overflow-wrap: anywhere; }
+.deletion-layout {
+  display: grid;
+  justify-items: center;
+  align-items: start;
+  padding: clamp(1rem, 5vw, 4rem);
+}
+
+.deletion-card { width: min(100%, 36rem); }
+.deletion-card h1 { margin: .8rem 0 .65rem; font-size: clamp(1.6rem, 4vw, 2.35rem); line-height: 1.2; }
+.deletion-card h2 { margin: .9rem 0 .65rem; font-size: 1.12rem; }
+.deletion-brand { display: inline-flex; align-items: center; gap: .65rem; color: var(--teal-deep); font-weight: 800; }
+.deletion-google { padding-bottom: 1rem; border-bottom: 1px solid var(--border); }
+.deletion-member { margin-bottom: 1rem; color: var(--teal-deep); }
+.deletion-success { margin-bottom: 1rem; color: var(--teal-deep); }
+.delete-account-divider { margin-top: 1rem; padding-top: .85rem; border-top: 1px solid var(--border); }
+.delete-account-link { color: #842b27; font-weight: 700; text-decoration: underline; text-underline-offset: .22em; }
+.delete-account-button { background: #842b27; border-color: #842b27; color: #fff; }
+.delete-account-button:hover { background: #6c211e; border-color: #6c211e; color: #fff; }
 .admin-link { white-space: nowrap; }
 .incoming-name { margin: 0 0 .55rem; color: var(--muted); font-size: .94rem; }
 

@@ -87,13 +87,15 @@ export function createCampusAuth({ origin, clientId, clientSecret, secureCookies
     const personal = selectedId === 'personal';
     const campus = getCampus(selectedId);
     if (selectedId !== null && !campus && !personal && !automatic) fail(400, '請選擇支援的 Google 帳號類型。');
-    if (intent !== 'signin' && intent !== 'link') fail(400, invalidFlow);
+    if (!['signin', 'link', 'delete'].includes(intent)) fail(400, invalidFlow);
     if (intent === 'link') {
       const site = request.headers['sec-fetch-site'];
       if (site && site !== 'same-origin') fail(403, '請從 StudyMate 的帳號頁面完成 Google 帳號連結。');
       if (account?.role !== 'student' || account.id !== url.searchParams.get('account')) fail(409, changedAccount);
-    } else if (account) {
+    } else if (intent === 'signin' && account) {
       fail(409, '若要切換帳號，請先登出 StudyMate。');
+    } else if (intent === 'delete' && account && (account.role !== 'student' || !account.googleEmail)) {
+      fail(409, '若要驗證其他 Google 帳號，請先登出 StudyMate。');
     }
 
     const config = await googleConfiguration();
@@ -134,27 +136,38 @@ export function createCampusAuth({ origin, clientId, clientSecret, secureCookies
     flows.delete(state);
     writeFlowCookie(response, '', 0);
     if (!flow || flow.expiresAt <= Date.now()) fail(400, invalidFlow);
-    if ((account?.id ?? null) !== flow.accountId || (flow.intent === 'link' && account?.role !== 'student')) {
-      fail(409, changedAccount);
-    }
-    if (currentUrl.searchParams.has('error')) fail(400, 'Google 登入未完成，請重試或選用另一個帳號。');
-
-    const config = await googleConfiguration();
-    let claims;
     try {
-      const tokens = await authorizationCodeGrant(config, currentUrl, {
-        pkceCodeVerifier: flow.verifier,
-        expectedState: state,
-        expectedNonce: flow.nonce,
-      });
-      claims = tokens.claims();
-    } catch {
-      fail(401, '無法驗證 Google 帳號登入，請重新開始。');
+      if ((account?.id ?? null) !== flow.accountId || (flow.intent === 'link' && account?.role !== 'student')) {
+        fail(409, changedAccount);
+      }
+      if (currentUrl.searchParams.has('error')) fail(400, 'Google 登入未完成，請重試或選用另一個帳號。');
+
+      const config = await googleConfiguration();
+      let claims;
+      try {
+        const tokens = await authorizationCodeGrant(config, currentUrl, {
+          pkceCodeVerifier: flow.verifier,
+          expectedState: state,
+          expectedNonce: flow.nonce,
+        });
+        claims = tokens.claims();
+      } catch {
+        fail(401, '無法驗證 Google 帳號登入，請重新開始。');
+      }
+      const personal = flow.selectedId === 'personal' || (flow.selectedId === 'any' && claims?.hd === undefined);
+      const identity = personal ? personalIdentityFromClaims(claims) : schoolIdentityFromClaims(claims);
+      return { intent: flow.intent, accountId: flow.accountId, identity };
+    } catch (error) {
+      if (flow.intent === 'delete') error.deletionFlow = true;
+      throw error;
     }
-    const personal = flow.selectedId === 'personal' || (flow.selectedId === 'any' && claims?.hd === undefined);
-    const identity = personal ? personalIdentityFromClaims(claims) : schoolIdentityFromClaims(claims);
-    return { intent: flow.intent, accountId: flow.accountId, identity };
   }
 
-  return { start, complete };
+  function discardAccountFlows(accountId) {
+    for (const [state, flow] of flows) {
+      if (flow.accountId === accountId) flows.delete(state);
+    }
+  }
+
+  return { start, complete, discardAccountFlows };
 }

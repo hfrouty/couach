@@ -1,10 +1,13 @@
 #requires -Version 5.1
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Apk')]
 param(
     [Parameter(Mandatory)] [string] $JdkHome,
     [Parameter(Mandatory)] [string] $PlatformJar,
     [Parameter(Mandatory)] [string] $BuildTools,
-    [Parameter(Mandatory)] [string] $OutputApk,
+    [Parameter(Mandatory, ParameterSetName = 'Apk')] [string] $OutputApk,
+    [Parameter(Mandatory, ParameterSetName = 'Bundle')] [string] $OutputAab,
+    [Parameter(Mandatory, ParameterSetName = 'Bundle')] [string] $Aapt2Path,
+    [Parameter(Mandatory, ParameterSetName = 'Bundle')] [string] $BundleTool,
     [Parameter(Mandatory)] [string] $KeyStore,
     [Parameter(Mandatory)] [string] $KeyAlias,
     [switch] $KeepBuildDirectory
@@ -38,16 +41,31 @@ $sdkBuildTools = Get-RequiredPath $BuildTools 'Container'
 $signingKey = Get-RequiredPath $KeyStore
 $javac = Get-RequiredPath (Join-Path $jdk 'bin/javac.exe')
 $jar = Get-RequiredPath (Join-Path $jdk 'bin/jar.exe')
-$aapt2 = Get-RequiredPath (Join-Path $sdkBuildTools 'aapt2.exe')
-$zipalign = Get-RequiredPath (Join-Path $sdkBuildTools 'zipalign.exe')
 $d8 = Get-RequiredPath (Join-Path $sdkBuildTools 'd8.bat')
-$apksigner = Get-RequiredPath (Join-Path $sdkBuildTools 'apksigner.bat')
+$buildingBundle = $PSCmdlet.ParameterSetName -eq 'Bundle'
+if ($buildingBundle) {
+    $outputPath = $OutputAab
+    $outputExtension = '.aab'
+    $outputLabel = 'AAB'
+    $aapt2 = Get-RequiredPath $Aapt2Path
+    $bundleToolJar = Get-RequiredPath $BundleTool
+    $java = Get-RequiredPath (Join-Path $jdk 'bin/java.exe')
+    $jarSigner = Get-RequiredPath (Join-Path $jdk 'bin/jarsigner.exe')
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+} else {
+    $outputPath = $OutputApk
+    $outputExtension = '.apk'
+    $outputLabel = 'APK'
+    $aapt2 = Get-RequiredPath (Join-Path $sdkBuildTools 'aapt2.exe')
+    $zipalign = Get-RequiredPath (Join-Path $sdkBuildTools 'zipalign.exe')
+    $apksigner = Get-RequiredPath (Join-Path $sdkBuildTools 'apksigner.bat')
+}
 
 $sourceRoot = Get-RequiredPath (Join-Path $PSScriptRoot 'app/src/main') 'Container'
 
-$destination = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputApk)
-if ([System.IO.Path]::GetExtension($destination) -ne '.apk' -or [System.IO.Directory]::Exists($destination)) {
-    throw 'OutputApk must be a path to an .apk file.'
+$destination = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($outputPath)
+if ([System.IO.Path]::GetExtension($destination) -ne $outputExtension -or [System.IO.Directory]::Exists($destination)) {
+    throw "Output must be a path to an $outputExtension file."
 }
 $destinationDirectory = [System.IO.Path]::GetDirectoryName($destination)
 [void] [System.IO.Directory]::CreateDirectory($destinationDirectory)
@@ -61,11 +79,14 @@ $classes = Join-Path $buildRoot 'classes'
 $dex = Join-Path $buildRoot 'dex'
 $compiledResources = Join-Path $buildRoot 'resources.zip'
 $classArchive = Join-Path $buildRoot 'classes.jar'
-$unsignedApk = Join-Path $buildRoot 'unsigned.apk'
-$alignedApk = Join-Path $buildRoot 'aligned.apk'
-$signedApk = Join-Path $buildRoot 'signed.apk'
-$pendingOutput = Join-Path $destinationDirectory ('.' + $buildName + '.apk.tmp')
+$linkedResources = Join-Path $buildRoot 'linked-resources.apk'
+$signedOutput = Join-Path $buildRoot ('signed' + $outputExtension)
+$pendingOutput = Join-Path $destinationDirectory ('.' + $buildName + $outputExtension + '.tmp')
 $previousJavaHome = $env:JAVA_HOME
+$keyPasswordVariable = 'STUDYMATE_KEYSTORE_PASSWORD'
+if (-not [string]::IsNullOrEmpty($env:STUDYMATE_KEY_PASSWORD)) {
+    $keyPasswordVariable = 'STUDYMATE_KEY_PASSWORD'
+}
 
 try {
     $env:JAVA_HOME = $jdk
@@ -89,10 +110,14 @@ try {
     }
 
     Invoke-BuildTool $aapt2 @('compile', '--dir', $resources, '-o', $compiledResources)
-    Invoke-BuildTool $aapt2 @(
+    $linkArguments = @(
         'link', '-I', $androidJar, '--manifest', $manifest, '--java', $generated,
-        '-o', $unsignedApk, $compiledResources
+        '-o', $linkedResources
     )
+    if ($buildingBundle) {
+        $linkArguments += '--proto-format'
+    }
+    Invoke-BuildTool $aapt2 ($linkArguments + $compiledResources)
 
     $javaSources = @(
         Get-ChildItem -LiteralPath $javaRoot, $generated -Filter '*.java' -Recurse -File |
@@ -105,29 +130,49 @@ try {
     Invoke-BuildTool $javac ($javacArgs + $javaSources)
     Invoke-BuildTool $jar @('cf', $classArchive, '-C', $classes, '.')
     Invoke-BuildTool $d8 @('--release', '--lib', $androidJar, '--min-api', $minSdk, '--output', $dex, $classArchive)
-    Invoke-BuildTool $jar @('uf', $unsignedApk, '-C', $dex, '.')
 
-    Invoke-BuildTool $zipalign @('-f', '4', $unsignedApk, $alignedApk)
-    $keyPasswordVariable = 'STUDYMATE_KEYSTORE_PASSWORD'
-    if (-not [string]::IsNullOrEmpty($env:STUDYMATE_KEY_PASSWORD)) {
-        $keyPasswordVariable = 'STUDYMATE_KEY_PASSWORD'
+    if ($buildingBundle) {
+        $baseModule = Join-Path $buildRoot 'base'
+        $baseArchive = Join-Path $buildRoot 'base.zip'
+        $unsignedBundle = Join-Path $buildRoot 'unsigned.aab'
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($linkedResources, $baseModule)
+        $moduleManifest = Join-Path $baseModule 'manifest'
+        [void] [System.IO.Directory]::CreateDirectory($moduleManifest)
+        Move-Item -LiteralPath (Join-Path $baseModule 'AndroidManifest.xml') -Destination $moduleManifest
+        Copy-Item -LiteralPath $dex -Destination (Join-Path $baseModule 'dex') -Recurse
+        [System.IO.Compression.ZipFile]::CreateFromDirectory($baseModule, $baseArchive)
+
+        Invoke-BuildTool $java @('-jar', $bundleToolJar, 'build-bundle', "--modules=$baseArchive", "--output=$unsignedBundle")
+        Invoke-BuildTool $jarSigner @(
+            '-keystore', $signingKey, '-storepass:env', 'STUDYMATE_KEYSTORE_PASSWORD',
+            '-keypass:env', $keyPasswordVariable, '-signedjar', $signedOutput, $unsignedBundle, $KeyAlias
+        )
+        Invoke-BuildTool $jarSigner @(
+            '-verify', '-strict', '-keystore', $signingKey, '-storepass:env',
+            'STUDYMATE_KEYSTORE_PASSWORD', $signedOutput, $KeyAlias
+        )
+        Invoke-BuildTool $java @('-jar', $bundleToolJar, 'validate', "--bundle=$signedOutput")
+    } else {
+        $alignedApk = Join-Path $buildRoot 'aligned.apk'
+        Invoke-BuildTool $jar @('uf', $linkedResources, '-C', $dex, '.')
+        Invoke-BuildTool $zipalign @('-f', '4', $linkedResources, $alignedApk)
+        Invoke-BuildTool $apksigner @(
+            'sign', '--ks', $signingKey, '--ks-key-alias', $KeyAlias,
+            '--ks-pass', 'env:STUDYMATE_KEYSTORE_PASSWORD', '--key-pass', ('env:' + $keyPasswordVariable),
+            '--v4-signing-enabled', 'false', '--out', $signedOutput, $alignedApk
+        )
+        Invoke-BuildTool $apksigner @('verify', '--verbose', $signedOutput)
+        Invoke-BuildTool $zipalign @('-c', '4', $signedOutput)
+        Invoke-BuildTool $aapt2 @('dump', 'badging', $signedOutput)
     }
-    Invoke-BuildTool $apksigner @(
-        'sign', '--ks', $signingKey, '--ks-key-alias', $KeyAlias,
-        '--ks-pass', 'env:STUDYMATE_KEYSTORE_PASSWORD', '--key-pass', ('env:' + $keyPasswordVariable),
-        '--v4-signing-enabled', 'false', '--out', $signedApk, $alignedApk
-    )
-    Invoke-BuildTool $apksigner @('verify', '--verbose', $signedApk)
-    Invoke-BuildTool $zipalign @('-c', '4', $signedApk)
-    Invoke-BuildTool $aapt2 @('dump', 'badging', $signedApk)
 
-    [System.IO.File]::Copy($signedApk, $pendingOutput)
+    [System.IO.File]::Copy($signedOutput, $pendingOutput)
     if ([System.IO.File]::Exists($destination)) {
         [System.IO.File]::Replace($pendingOutput, $destination, [NullString]::Value)
     } else {
         [System.IO.File]::Move($pendingOutput, $destination)
     }
-    Write-Output "APK: $destination"
+    Write-Output ("{0}: {1}" -f $outputLabel, $destination)
 } finally {
     $env:JAVA_HOME = $previousJavaHome
     if ([System.IO.File]::Exists($pendingOutput)) {

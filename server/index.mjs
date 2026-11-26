@@ -24,14 +24,19 @@ const publicFiles = new Map([
   ['/index.html', 'index.html'],
   ['/admin', 'admin.html'],
   ['/admin/', 'admin.html'],
+  ['/privacy', 'privacy.html'],
+  ['/community-rules', 'community-rules.html'],
+  ['/delete-account', 'delete-account.html'],
+  ['/delete-account/', 'delete-account.html'],
   ...[
     'app.mjs', 'admin.mjs', 'campus-map.mjs', 'campus-places.mjs', 'campus-cafes.mjs', 'campuses.mjs', 'matching.mjs', 'sample-data.mjs', 'study-tools.mjs', 'icons.mjs',
-    'styles.css', 'tools.css', 'account.css', 'admin.css', 'campus-map.css', 'interior.css',
+    'styles.css', 'tools.css', 'account.css', 'admin.css', 'campus-map.css', 'interior.css', 'policy.css',
     'assets/icon.svg', 'assets/library-study.webp', 'assets/study-pop.webp', 'assets/study-banner.webp',
     'assets/campus-cafe.webp', 'assets/campus-mascot.webp', 'assets/paper-grain.webp',
   ].map(name => [`/${name}`, name]),
 ]);
 const dataLimit = 16 * 1024;
+const communityRulesVersion = 1;
 const authWindow = 60_000;
 const authLimits = {
   login: { ip: 60, account: 8 },
@@ -160,10 +165,20 @@ export function createStudyServer({
   campusAuth = null,
 }) {
   if (databaseFile !== ':memory:') mkdirSync(dirname(databaseFile), { recursive: true });
-  const db = new DatabaseSync(databaseFile, { timeout: 5000 });
+  const db = new DatabaseSync(databaseFile, { timeout: 5000, enableForeignKeyConstraints: true });
   db.exec('PRAGMA journal_mode = WAL');
   const accounts = createAccounts(db, { secureCookies: publicHttps, adminSetupToken });
+  db.exec(`CREATE TABLE IF NOT EXISTS community_rules_acceptance (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL,
+    accepted_at INTEGER NOT NULL
+  ) STRICT`);
+  const rulesAcceptance = db.prepare('SELECT version FROM community_rules_acceptance WHERE account_id = ?');
+  const saveRulesAcceptance = db.prepare(`INSERT INTO community_rules_acceptance (account_id, version, accepted_at)
+    VALUES (?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET version = excluded.version, accepted_at = excluded.accepted_at`);
+  const hasAcceptedRules = account => rulesAcceptance.get(account.id)?.version === communityRulesVersion;
   const records = createRecords(db);
+  const studyState = account => ({ ...records.state(account), communityRulesAccepted: hasAcceptedRules(account) });
   const matchmaking = createMatchmaking(db);
   const walkingRoutes = createWalkingRoutes();
   const throttleAuth = authLimiter(publicHttps);
@@ -171,6 +186,12 @@ export function createStudyServer({
     route, { body: readFileSync(join(root, file)), type: mime[file.split('.').at(-1)] },
   ]));
   let authInFlight = 0;
+
+  function requireCommunityRules(account, data) {
+    if (hasAcceptedRules(account)) return;
+    if (data?.communityRules !== true) fail(403, '請先閱讀並同意共讀守則。');
+    saveRulesAcceptance.run(account.id, communityRulesVersion, Date.now());
+  }
 
   async function performAuth(request, action, invoke) {
     const data = await readJson(request);
@@ -186,7 +207,8 @@ export function createStudyServer({
 
   async function handleCampusAuth(request, response, route) {
     if (request.method !== 'GET') fail(404, '找不到這個功能。');
-    if (!campusAuth) return redirect(response, '/?campus=unavailable#explore');
+    let deletion = route.endsWith('/start') && new URL(request.url, 'http://local').searchParams.get('intent') === 'delete';
+    if (!campusAuth) return redirect(response, deletion ? '/delete-account?campus=unavailable' : '/?campus=unavailable#explore');
     const account = accounts.current(request);
     try {
       if (route.endsWith('/start')) {
@@ -194,10 +216,16 @@ export function createStudyServer({
         return redirect(response, await campusAuth.start(request, response, account));
       }
       const authorization = await campusAuth.complete(request, response, account);
+      deletion = authorization.intent === 'delete';
+      if (deletion) {
+        accounts.verifyGoogleDeletion(authorization, response);
+        return redirect(response, '/delete-account');
+      }
       accounts.campusSignIn(authorization, response);
       return redirect(response, '/#explore');
     } catch (error) {
       if (!error.status) console.error('StudyMate campus sign-in could not be completed.');
+      if (deletion || error.deletionFlow) return redirect(response, '/delete-account?campus=delete-failed');
       const result = { 403: 'school', 409: account ? 'account' : 'link', 429: 'busy', 503: 'unavailable' }[error.status] || 'failed';
       return redirect(response, `/?campus=${result}#explore`);
     }
@@ -207,7 +235,9 @@ export function createStudyServer({
     if (method !== 'GET') requireSameOrigin(request, publicHttps);
     const account = await accounts.current(request);
     const adminSetup = adminSetupToken.length >= 32 && !accounts.adminConfigured();
-    if (method === 'GET' && route === '/api/account') return { account, adminSetup, campusLogin: Boolean(campusAuth) };
+    if (method === 'GET' && route === '/api/account') {
+      return { account, adminSetup, campusLogin: Boolean(campusAuth), deletionVerified: accounts.deletionVerified(request, account) };
+    }
     if (method === 'POST' && ['/api/auth/register', '/api/auth/login', '/api/auth/setup'].includes(route)) {
       const action = route.split('/').at(-1);
       if (campusAuth && action === 'register') fail(403, '請使用 Google 帳號加入 StudyMate。');
@@ -224,32 +254,51 @@ export function createStudyServer({
       return { account: null };
     }
     if (!account) fail(401, '請先登入 StudyMate。');
+    if (method === 'POST' && route === '/api/auth/delete-account') {
+      if (expectedAccount !== account.id) fail(409, '請重新確認要刪除的帳號。', 'ACCOUNT_CHANGED');
+      return performAuth(request, 'password', data => accounts.deleteAccount(request, response, account, data, accountId => {
+        records.prepareAccountDeletion(accountId);
+        const clearMatchLocations = matchmaking.prepareAccountDeletion(accountId);
+        return () => {
+          clearMatchLocations();
+          campusAuth?.discardAccountFlows?.(accountId);
+        };
+      }));
+    }
     if (campusAuth && account.role === 'student' && !account.googleEmail && (route === '/api/study' || route.startsWith('/api/study/'))) {
       fail(403, '請先連結 Google 帳號。');
     }
     if (method === 'PATCH' && route === '/api/profile') {
-      return { account: await accounts.updateProfile(account, await readJson(request)) };
+      const data = await readJson(request);
+      requireCommunityRules(account, data);
+      return { account: await accounts.updateProfile(account, data), communityRulesAccepted: true };
     }
     if (route.startsWith('/api/admin/')) {
       if (account.role !== 'admin') fail(403, '此頁面僅限管理員使用。');
       if (method === 'POST' && route === '/api/admin/password') {
         return performAuth(request, 'password', data => accounts.changeAdminPassword(account, data, response));
       }
-      const resolveReport = route.match(/^\/api\/admin\/reports\/([a-z0-9-]+)\/resolve$/);
-      if (method === 'POST' && resolveReport) records.resolveReport(resolveReport[1]);
-      else if (method !== 'GET' || route !== '/api/admin/overview') fail(404, '找不到這個功能。');
+      const reportAction = route.match(/^\/api\/admin\/reports\/([a-z0-9-]+)\/(resolve|close-invitation)$/);
+      if (method === 'POST' && reportAction) {
+        const [, id, action] = reportAction;
+        if (action === 'close-invitation') records.closeReportedInvitation(id);
+        else records.resolveReport(id);
+      } else if (method !== 'GET' || route !== '/api/admin/overview') fail(404, '找不到這個功能。');
       return { accounts: await accounts.listAccounts(), ...records.moderation() };
     }
-    if (method === 'GET' && route === '/api/study') return records.state(account);
+    if (method === 'GET' && route === '/api/study') return studyState(account);
     if (method !== 'POST') fail(404, '找不到這個功能。');
     if (route === '/api/study/match') {
       const data = await readJson(request);
       if (accounts.current(request)?.id !== account.id) fail(401, '請先登入 StudyMate。');
+      if (data.action === 'start') requireCommunityRules(account, data);
       return matchmaking.handle(account, data);
     } else if (route === '/api/study/walking-route') {
       return walkingRoutes(await readJson(request));
     } else if (route === '/api/study/sessions') {
-      records.publish(account, await readJson(request));
+      const data = await readJson(request);
+      requireCommunityRules(account, data);
+      records.publish(account, data);
     } else if (route === '/api/study/focus') {
       records.addFocus(account, await readJson(request));
     } else {
@@ -257,9 +306,16 @@ export function createStudyServer({
       const reservation = route.match(/^\/api\/study\/reservations\/([a-z0-9-]+)$/);
       if (session) {
         const [, id, action] = session;
-        if (action === 'edit') records.edit(account, id, await readJson(request));
+        if (action === 'edit') {
+          const data = await readJson(request);
+          requireCommunityRules(account, data);
+          records.edit(account, id, data);
+        }
         if (action === 'close') records.close(account, id);
-        if (action === 'join') records.requestJoin(account, id);
+        if (action === 'join') {
+          if (!hasAcceptedRules(account)) requireCommunityRules(account, await readJson(request));
+          records.requestJoin(account, id);
+        }
         if (action === 'report') records.report(account, id, (await readJson(request)).reason);
         if (action === 'block') records.block(account, id);
       } else if (reservation) {
@@ -268,7 +324,7 @@ export function createStudyServer({
         fail(404, '找不到這個功能。');
       }
     }
-    return records.state(account);
+    return studyState(account);
   }
 
   const server = createServer({ requestTimeout: 15_000, headersTimeout: 10_000 }, async (request, response) => {

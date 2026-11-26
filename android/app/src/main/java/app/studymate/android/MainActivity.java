@@ -248,9 +248,11 @@ public final class MainActivity extends Activity {
         String scheme = uri.getScheme();
         boolean isWebLink = "https".equalsIgnoreCase(scheme) && uri.getHost() != null
             && uri.getEncodedUserInfo() == null;
-        if (!isWebLink && !"geo".equalsIgnoreCase(scheme)) return false;
+        boolean isEmailLink = "mailto".equalsIgnoreCase(scheme);
+        if (!isWebLink && !isEmailLink && !"geo".equalsIgnoreCase(scheme)) return false;
 
-        Intent intent = new Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE);
+        Intent intent = new Intent(isEmailLink ? Intent.ACTION_SENDTO : Intent.ACTION_VIEW, uri);
+        if (!isEmailLink) intent.addCategory(Intent.CATEGORY_BROWSABLE);
         try {
             startActivity(intent);
             return true;

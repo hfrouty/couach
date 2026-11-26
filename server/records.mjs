@@ -5,7 +5,7 @@ import { DEFAULT_CAMPUS_ID, getCampus } from '../campuses.mjs';
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
 const COLORS = ['moss', 'plum', 'sand', 'sky'];
-const REASONS = ['不當內容', '可疑邀約', '騷擾或安全疑慮', '其他'];
+export const REPORT_REASONS = ['不當內容', '可疑邀約', '騷擾或安全疑慮', '其他'];
 const SLOT_LENGTHS = [25, 50, 60, 90, 120];
 
 function fail(status, message) {
@@ -83,6 +83,26 @@ function transaction(db, work) {
   }
 }
 
+export function createStudyBlock(db) {
+  const insertBlock = db.prepare(`
+    INSERT INTO study_blocks (blocker_id, blocked_id) VALUES (?, ?)
+    ON CONFLICT DO NOTHING
+  `);
+  const cancelBlockedRequests = db.prepare(`
+    UPDATE reservations SET status = 'cancelled', updated_at = :now
+    WHERE status IN ('pending', 'confirmed') AND EXISTS (
+      SELECT 1 FROM study_sessions s
+      WHERE s.id = reservations.session_id AND s.ends_at > :now
+        AND ((reservations.applicant_id = :first AND s.host_id = :second)
+          OR (reservations.applicant_id = :second AND s.host_id = :first))
+    )
+  `);
+  return (first, second, now) => {
+    insertBlock.run(first, second);
+    cancelBlockedRequests.run({ now, first, second });
+  };
+}
+
 export function createRecords(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS study_sessions (
@@ -135,6 +155,18 @@ export function createRecords(db) {
     ) STRICT;
 
     CREATE INDEX IF NOT EXISTS study_reports_queue ON study_reports(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS study_match_reports (
+      id TEXT PRIMARY KEY NOT NULL,
+      ticket_id TEXT NOT NULL,
+      reporter_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      reported_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      reason TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+      created_at INTEGER NOT NULL,
+      UNIQUE (ticket_id, reporter_id)
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS study_match_reports_queue ON study_match_reports(status, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS focus_entries (
       account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -231,37 +263,44 @@ export function createRecords(db) {
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT (session_id, reporter_id) DO NOTHING
   `);
-  const insertBlock = db.prepare(`
-    INSERT INTO study_blocks (blocker_id, blocked_id) VALUES (?, ?)
-    ON CONFLICT DO NOTHING
-  `);
-  const cancelBlockedRequests = db.prepare(`
-    UPDATE reservations SET status = 'cancelled', updated_at = :now
-    WHERE status IN ('pending', 'confirmed') AND EXISTS (
-      SELECT 1 FROM study_sessions s
-      WHERE s.id = reservations.session_id AND s.ends_at > :now
-        AND ((reservations.applicant_id = :first AND s.host_id = :second)
-          OR (reservations.applicant_id = :second AND s.host_id = :first))
-    )
-  `);
+  const blockAccounts = createStudyBlock(db);
   const insertFocus = db.prepare(`
     INSERT INTO focus_entries (account_id, at, minutes) VALUES (?, ?, ?)
     ON CONFLICT (account_id, at) DO NOTHING
   `);
   const reviewReports = db.prepare(`
-    SELECT r.id, s.title, a.name AS reporter, r.reason, r.status, r.created_at
-    FROM study_reports r JOIN study_sessions s ON s.id = r.session_id
-    JOIN accounts a ON a.id = r.reporter_id
-    ORDER BY (r.status = 'open') DESC, r.created_at DESC
+    SELECT * FROM (
+      SELECT r.id, s.title, a.name AS reporter, r.reason, r.status, r.created_at, NULL AS reportedEmail,
+             (s.is_quick_match = 0 AND s.closed_at IS NULL AND s.ends_at > ?) AS canClose
+      FROM study_reports r JOIN study_sessions s ON s.id = r.session_id
+      JOIN accounts a ON a.id = r.reporter_id
+      UNION ALL
+      SELECT r.id, '匿名配對' AS title, a.name AS reporter, r.reason, r.status, r.created_at, target.email AS reportedEmail,
+             0 AS canClose
+      FROM study_match_reports r JOIN accounts a ON a.id = r.reporter_id
+      JOIN accounts target ON target.id = r.reported_id
+    )
+    ORDER BY (status = 'open') DESC, created_at DESC
     LIMIT 200
   `);
   const reviewCounts = db.prepare(`
     SELECT
       (SELECT COUNT(*) FROM study_sessions WHERE is_quick_match = 0) AS sessions,
       (SELECT COUNT(*) FROM reservations r JOIN study_sessions s ON s.id = r.session_id WHERE s.is_quick_match = 0) AS reservations,
-      (SELECT COUNT(*) FROM study_reports WHERE status = 'open') AS reports
+      (SELECT COUNT(*) FROM study_reports WHERE status = 'open')
+        + (SELECT COUNT(*) FROM study_match_reports WHERE status = 'open') AS reports
   `);
   const reviewUpdate = db.prepare("UPDATE study_reports SET status = 'resolved' WHERE id = ?");
+  const reviewMatchUpdate = db.prepare("UPDATE study_match_reports SET status = 'resolved' WHERE id = ?");
+  const reportedInvitation = db.prepare(`
+    SELECT s.* FROM study_reports r JOIN study_sessions s ON s.id = r.session_id
+    WHERE r.id = ? AND s.is_quick_match = 0
+  `);
+  const removeJoinedQuickMatches = db.prepare(`
+    DELETE FROM study_sessions WHERE is_quick_match = 1 AND id IN (
+      SELECT session_id FROM reservations WHERE applicant_id = ?
+    )
+  `);
 
   function sessionById(id, account, allowQuickMatch = false) {
     const session = typeof id === 'string' ? getSession.get(id) : null;
@@ -344,14 +383,18 @@ export function createRecords(db) {
     });
   }
 
+  function closeInvitation(session) {
+    if (session.closed_at !== null) return;
+    const now = Date.now();
+    closeSession.run(now, session.id);
+    if (session.ends_at > now) cancelSessionRequests.run(now, session.id);
+  }
+
   function close(account, id) {
     transaction(db, () => {
       const session = sessionById(id, account);
       if (session.host_id !== account.id) fail(403, '只有發起人可以關閉邀約。');
-      if (session.closed_at !== null) return;
-      const now = Date.now();
-      closeSession.run(now, id);
-      if (session.ends_at > now) cancelSessionRequests.run(now, id);
+      closeInvitation(session);
     });
   }
 
@@ -406,7 +449,7 @@ export function createRecords(db) {
   }
 
   function report(account, id, reason) {
-    if (!REASONS.includes(reason)) fail(400, '請選擇有效的檢舉原因。');
+    if (!REPORT_REASONS.includes(reason)) fail(400, '請選擇有效的檢舉原因。');
     const session = sessionById(id, account, true);
     canTarget(account, session);
     insertReport.run(randomUUID(), session.id, account.id, reason, Date.now());
@@ -420,8 +463,7 @@ export function createRecords(db) {
       const alreadyBlocked = blocked(account.id, target);
       if (alreadyBlocked) return;
       canTarget(account, session, target);
-      insertBlock.run(account.id, target);
-      cancelBlockedRequests.run({ now: Date.now(), first: account.id, second: target });
+      blockAccounts(account.id, target, Date.now());
     });
   }
 
@@ -435,19 +477,35 @@ export function createRecords(db) {
   }
 
   function moderation() {
-    const reports = reviewReports.all().map(({ created_at, ...row }) => ({
+    const reports = reviewReports.all(Date.now()).map(({ created_at, canClose, ...row }) => ({
       ...row,
+      canClose: Boolean(canClose),
       createdAt: new Date(created_at).toISOString(),
     }));
     return { reports, counts: reviewCounts.get() };
   }
 
   function resolveReport(id) {
-    if (typeof id !== 'string' || !reviewUpdate.run(id).changes) fail(404, '找不到這筆檢舉。');
+    if (typeof id !== 'string' || (!reviewUpdate.run(id).changes && !reviewMatchUpdate.run(id).changes)) {
+      fail(404, '找不到這筆檢舉。');
+    }
+  }
+
+  function closeReportedInvitation(id) {
+    transaction(db, () => {
+      const session = reportedInvitation.get(id);
+      if (!session) fail(404, '找不到被檢舉的邀約。');
+      closeInvitation(session);
+      reviewUpdate.run(id);
+    });
+  }
+
+  function prepareAccountDeletion(accountId) {
+    removeJoinedQuickMatches.run(accountId);
   }
 
   return {
     state, publish, edit, close, requestJoin, setReservationStatus, report, block,
-    addFocus, moderation, resolveReport,
+    addFocus, moderation, resolveReport, closeReportedInvitation, prepareAccountDeletion,
   };
 }

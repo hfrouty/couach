@@ -9,6 +9,7 @@ const passwordCost = { N: 32_768, r: 8, p: 3, maxmem: 64 * 1024 * 1024 };
 const dummySalt = randomBytes(16);
 const dummyKey = randomBytes(keySize);
 const sessionLifetime = 7 * 24 * 60 * 60;
+const deletionProofLifetime = 5 * 60 * 1000;
 const profileOptions = { department: DEPARTMENTS, subject: SUBJECTS, style: STYLES };
 const publicFields = 'id, email, name, department, region, subject, style, role, created_at AS createdAt';
 
@@ -84,6 +85,11 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
     ) STRICT;
     CREATE INDEX IF NOT EXISTS account_sessions_expiry ON account_sessions(expires_at);
 
+    CREATE TABLE IF NOT EXISTS account_deletion_proofs (
+      token_hash TEXT PRIMARY KEY REFERENCES account_sessions(token_hash) ON DELETE CASCADE,
+      expires_at INTEGER NOT NULL
+    ) STRICT;
+
     CREATE TABLE IF NOT EXISTS campus_identities (
       subject TEXT PRIMARY KEY,
       account_id TEXT NOT NULL UNIQUE REFERENCES accounts(id) ON DELETE CASCADE,
@@ -120,6 +126,10 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
   const deleteSession = db.prepare('DELETE FROM account_sessions WHERE token_hash = ?');
   const deleteAccountSessions = db.prepare('DELETE FROM account_sessions WHERE account_id = ?');
   const expireSessions = db.prepare('DELETE FROM account_sessions WHERE expires_at <= ?');
+  const insertDeletionProof = db.prepare('INSERT INTO account_deletion_proofs (token_hash, expires_at) VALUES (?, ?)');
+  const expireDeletionProofs = db.prepare('DELETE FROM account_deletion_proofs WHERE expires_at <= ?');
+  const findDeletionProof = db.prepare('SELECT 1 FROM account_deletion_proofs WHERE token_hash = ? AND expires_at > ?');
+  const deleteMember = db.prepare('DELETE FROM accounts WHERE id = ?');
 
   function transaction(action) {
     db.exec('BEGIN IMMEDIATE');
@@ -157,11 +167,11 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
     };
   }
 
-  function grantSession(accountId) {
+  function grantSession(accountId, lifetime = sessionLifetime) {
     const now = Date.now();
     const token = randomBytes(32).toString('base64url');
     expireSessions.run(now);
-    insertSession.run(digest(token).toString('hex'), accountId, now + sessionLifetime * 1000);
+    insertSession.run(digest(token).toString('hex'), accountId, now + lifetime * 1000);
     return token;
   }
 
@@ -185,6 +195,13 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
     const hash = readSessionHash(req);
     const session = hash ? findActiveSession.get(hash, Date.now()) : null;
     return session ? withGoogleIdentity(findAccount.get(session.account_id)) : null;
+  }
+
+  function deletionVerified(req, account) {
+    const hash = readSessionHash(req);
+    if (!hash || !account?.googleEmail) return false;
+    const now = Date.now();
+    return findActiveSession.get(hash, now)?.account_id === account.id && Boolean(findDeletionProof.get(hash, now));
   }
 
   async function createAccount(data, res, role) {
@@ -267,6 +284,58 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
     return account;
   }
 
+  function verifyGoogleDeletion({ accountId, identity }, res) {
+    const { subject, campusId } = identity;
+    const lifetime = deletionProofLifetime / 1000;
+    const token = transaction(() => {
+      const linked = campusBySubject.get(subject);
+      if (!linked || linked.campusId !== (campusId ?? '') || (accountId && linked.accountId !== accountId)) {
+        fail(403, '請選擇這個 StudyMate 帳號已連結的 Google 帳號。');
+      }
+      const account = findAccount.get(linked.accountId);
+      if (account?.role !== 'student') fail(403, '找不到此 Google 帳號的 StudyMate 帳號。');
+
+      const token = grantSession(account.id, lifetime);
+      const now = Date.now();
+      expireDeletionProofs.run(now);
+      insertDeletionProof.run(digest(token).toString('hex'), now + deletionProofLifetime);
+      return token;
+    });
+    sendCookie(res, token, lifetime);
+  }
+
+  async function deleteAccount(req, res, account, data, prepareDeletion) {
+    if (data?.confirmation !== '刪除帳號') fail(400, '請輸入「刪除帳號」以確認。');
+    let previousHash;
+    if (!account.googleEmail) {
+      const password = data.password;
+      if (!validPassword(password)) fail(400, '目前的密碼不正確。');
+      const credentials = findCredentials.get(account.email);
+      if (credentials?.id !== account.id) fail(400, '目前的密碼不正確。');
+      const actual = await deriveKey(password, credentials.password_salt, keySize, passwordCost);
+      if (!timingSafeEqual(actual, credentials.password_hash)) fail(400, '目前的密碼不正確。');
+      previousHash = credentials.password_hash;
+    }
+
+    const finishDeletion = transaction(() => {
+      const sessionHash = readSessionHash(req);
+      const session = sessionHash ? findActiveSession.get(sessionHash, Date.now()) : null;
+      if (session?.account_id !== account.id) fail(401, '登入已失效，請重新登入。');
+      const currentAccount = withGoogleIdentity(findAccount.get(account.id));
+      if (currentAccount?.googleEmail) {
+        if (!deletionVerified(req, currentAccount)) fail(403, '請重新用已連結的 Google 帳號驗證身分。');
+      } else if (!previousHash || !findUnchangedAccount.get(account.id, previousHash)) {
+        fail(409, '登入資料已變更，請重新登入後再試。');
+      }
+      const finish = prepareDeletion(account.id);
+      deleteMember.run(account.id);
+      return finish;
+    });
+    finishDeletion();
+    sendCookie(res, '', 0);
+    return { ok: true };
+  }
+
   async function changeAdminPassword(account, data, res) {
     if (account?.role !== 'admin') fail(403, '僅管理員可更改後台密碼。');
     const { currentPassword, newPassword } = data ?? {};
@@ -312,5 +381,8 @@ export function createAccounts(db, { secureCookies = true, adminSetupToken } = {
     return selectAccounts.all();
   }
 
-  return { register, login, campusSignIn, changeAdminPassword, logout, current, setup, updateProfile, listAccounts, adminConfigured };
+  return {
+    register, login, campusSignIn, verifyGoogleDeletion, deletionVerified, deleteAccount,
+    changeAdminPassword, logout, current, setup, updateProfile, listAccounts, adminConfigured,
+  };
 }

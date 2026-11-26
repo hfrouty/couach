@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { getCampus } from '../campuses.mjs';
 import { markerDistance } from '../matching.mjs';
+import { createStudyBlock, REPORT_REASONS } from './records.mjs';
 import { getCafeById } from './taiwan-cafes.mjs';
 
 const SEARCH_LEASE = 45_000;
@@ -8,7 +9,7 @@ const SEARCH_LIMIT = 120_000;
 const ACCEPT_LIMIT = 60_000;
 const EXPIRED_TICKET_RETENTION = 5 * 60_000;
 const LOCATION_SHARE_LIFETIME = 10 * 60_000;
-const ACTIONS = ['check', 'start', 'cancel', 'accept', 'decline', 'dismiss', 'select-cafe', 'share-location', 'update-location', 'stop-location'];
+const ACTIONS = ['check', 'start', 'cancel', 'accept', 'decline', 'dismiss', 'select-cafe', 'share-location', 'update-location', 'stop-location', 'report', 'block'];
 
 function fail(status, message) {
   throw Object.assign(new Error(message), { status });
@@ -81,7 +82,7 @@ export function createMatchmaking(db) {
         OR (blocker_id = t.account_id AND blocked_id = :account)
     )`;
   const partnerTicket = db.prepare(`
-    SELECT t.id, t.region, t.status, t.expires_at, t.partner_ticket_id
+    SELECT t.id, t.account_id, t.region, t.status, t.expires_at, t.partner_ticket_id
     FROM study_match_tickets t
     WHERE t.id = :partner AND ${notBlocked}
   `);
@@ -105,6 +106,12 @@ export function createMatchmaking(db) {
   const expireOffer = db.prepare("UPDATE study_match_tickets SET expires_at = MIN(expires_at, ?) WHERE id = ? AND status IN ('found', 'waiting')");
   const dismissTicket = db.prepare("UPDATE study_match_tickets SET status = 'dismissed' WHERE id = ?");
   const renewTicket = db.prepare('UPDATE study_match_tickets SET expires_at = ? WHERE id = ?');
+  const blockAccounts = createStudyBlock(db);
+  const insertReport = db.prepare(`
+    INSERT INTO study_match_reports (id, ticket_id, reporter_id, reported_id, reason, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT (ticket_id, reporter_id) DO NOTHING
+  `);
   // One student can dismiss or match again while the other keeps this result.
   const removeOldTickets = db.prepare(`
     DELETE FROM study_match_tickets AS t
@@ -113,6 +120,13 @@ export function createMatchmaking(db) {
         SELECT 1 FROM study_match_tickets kept WHERE kept.status = 'matched' AND kept.partner_ticket_id = t.id
       )
   `);
+  const accountMatchTickets = db.prepare(`
+    SELECT id FROM study_match_tickets
+    WHERE account_id = :account OR partner_ticket_id IN (
+      SELECT id FROM study_match_tickets WHERE account_id = :account
+    )
+  `);
+  const deleteTicket = db.prepare('DELETE FROM study_match_tickets WHERE id = ?');
 
   function transaction(work) {
     db.exec('BEGIN IMMEDIATE');
@@ -272,6 +286,19 @@ export function createMatchmaking(db) {
       } else if (action === 'check' || action === 'start') {
         if (result.status !== 'searching') return result;
         renewTicket.run(Math.min(now + SEARCH_LEASE, ticket.started_at + SEARCH_LIMIT), ticket.id);
+      } else if (action === 'report' || action === 'block') {
+        if (ticket?.id !== ticketId || result.status !== 'matched') fail(409, '找不到可處理的配對。');
+        const partner = activePartner(ticket, now);
+        if (action === 'report') {
+          if (!REPORT_REASONS.includes(data.reason)) fail(400, '請選擇有效的檢舉原因。');
+          insertReport.run(randomUUID(), ticket.id, account.id, partner.account_id, data.reason, now);
+        }
+        if (action === 'block' || data.blockPeer === true) {
+          blockAccounts(account.id, partner.account_id, now);
+          dismissTicket.run(ticket.id);
+          dismissTicket.run(partner.id);
+          clearPairLocations(ticket);
+        }
       } else if (!ticket || ticket.id !== ticketId) {
         return result;
       } else if (action === 'accept' && result.status === 'found') {
@@ -309,5 +336,13 @@ export function createMatchmaking(db) {
     });
   }
 
-  return { handle, logout };
+  function prepareAccountDeletion(accountId) {
+    const tickets = accountMatchTickets.all({ account: accountId });
+    for (const ticket of tickets) deleteTicket.run(ticket.id);
+    return () => {
+      for (const ticket of tickets) stopLocation(ticket.id);
+    };
+  }
+
+  return { handle, logout, prepareAccountDeletion };
 }

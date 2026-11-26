@@ -20,6 +20,8 @@ const onlineScopeNote = '線上共讀不限校園區域';
 const matchPollInterval = 4_000;
 const locationUploadInterval = 3_500;
 const activeMatchStatuses = new Set(['searching', 'found', 'waiting']);
+const reportReasons = ['不當內容', '可疑邀約', '騷擾或安全疑慮', '其他'];
+const locationShareDisclosure = 'StudyMate 會把你的精確位置傳到 Railway 上的伺服器，轉給這次配對的夥伴。分享最多 10 分鐘，你可以隨時停止。對方點選導航時，目的地座標會傳給 Google 地圖。';
 
 const initialFilters = { timing: 'all', subject: '', mode: '', region: '', style: '', department: '', cross: false, sort: 'score' };
 
@@ -66,6 +68,9 @@ const navigation = [
 ];
 let campusNotice = '';
 const entryUrl = new URL(window.location.href);
+const deletionPage = /^\/delete-account\/?$/.test(entryUrl.pathname);
+let deletionVerified = false;
+let deletionComplete = false;
 const campusNotices = new Map([
   ['school', '請在 Google 選擇一般 Gmail 或支援學校的 Google 帳號。'],
   ['link', '這個信箱可能已有 StudyMate 帳號，請先用舊帳密登入，再連結 Google 帳號。'],
@@ -73,6 +78,7 @@ const campusNotices = new Map([
   ['failed', 'Google 登入未完成，請重新開始。'],
   ['busy', 'Google 登入目前較忙，請稍後再試。'],
   ['unavailable', 'Google 登入目前未開放，請稍後再試。'],
+  ['delete-failed', 'Google 驗證未完成。請選擇已連結的 Google 帳號，或登出後再試。'],
 ]);
 if (entryUrl.searchParams.has('campus')) {
   campusNotice = campusNotices.get(entryUrl.searchParams.get('campus')) ?? '';
@@ -86,7 +92,8 @@ function emptyState() {
 
 async function api(path, { method = 'GET', data } = {}) {
   const accountId = state.account?.id;
-  const scoped = path === '/study' || path.startsWith('/study/') || path === '/profile' || path === '/auth/logout';
+  const scoped = path === '/study' || path.startsWith('/study/') || path === '/profile'
+    || path === '/auth/logout' || path === '/auth/delete-account';
   let response;
   try {
     response = await fetch(`/api${path}`, {
@@ -114,7 +121,7 @@ async function api(path, { method = 'GET', data } = {}) {
     if (accountChanged) app.querySelector('main').focus({ preventScroll: true });
     else toast('登入已過期，請重新登入。');
   }
-  throw Object.assign(new Error(message), { code: accountChanged ? 'ACCOUNT_CHANGED' : undefined });
+  throw Object.assign(new Error(message), { status: response.status, code: accountChanged ? 'ACCOUNT_CHANGED' : undefined });
 }
 
 function timerKey(id) {
@@ -151,6 +158,7 @@ function bindAccount(account) {
 function resetAccount() {
   resetMatch();
   state = emptyState();
+  deletionVerified = false;
   authMode = 'login';
   legacyLogin = false;
   selectedCampusId = DEFAULT_CAMPUS_ID;
@@ -348,6 +356,10 @@ function renderShell(content) {
 function render() {
   cleanup();
   cleanup = () => {};
+  if (deletionPage) {
+    app.innerHTML = renderDeletionPage();
+    return;
+  }
   if (loading || !state.account || needsGoogleLink()) {
     app.innerHTML = renderAuth();
     return;
@@ -381,6 +393,18 @@ function passwordEntry(register, label) {
   </form>`;
 }
 
+function policyLinks() {
+  return '<nav class="account-policy-links" aria-label="StudyMate 政策"><a href="/privacy">隱私權政策</a><a href="/community-rules">共讀守則</a></nav>';
+}
+
+function communityRulesField() {
+  if (state.communityRulesAccepted) return '';
+  return `<div class="community-agreement">
+    <label class="check-field"><input type="checkbox" name="communityRules" required>我已閱讀並同意共讀守則</label>
+    <a href="/community-rules" target="_blank" rel="noopener noreferrer">閱讀共讀守則（另開視窗）</a>
+  </div>`;
+}
+
 function googleEntry() {
   const notice = campusNotice ? `<p class="account-error campus-entry-notice" role="alert">${escape(campusNotice)}</p>` : '';
   if (needsGoogleLink()) {
@@ -390,7 +414,7 @@ function googleEntry() {
       <p class="account-email campus-linked-account">${escape(account.email)}</p>
       ${notice}
       ${googleAuthForm(account)}
-      <div class="account-switch">${button('登出', 'logout', { variant: 'text' })}</div>`;
+      <div class="account-switch">${button('登出', 'logout', { variant: 'text' })}<a class="delete-account-link" href="/delete-account">刪除帳號</a></div>`;
   }
   return `<h2>歡迎來到 StudyMate</h2>
     <p class="account-description">一般 Gmail 可以登入後選擇校園，校園帳號會直接開啟所屬學校的地圖。</p>
@@ -436,9 +460,61 @@ function renderAuth() {
             ${passwordEntry(register, register ? '註冊並登入' : '登入')}
             <div class="account-switch"><span>${register ? '已經有帳號？' : '第一次使用？'}</span>${button(register ? '我要登入' : '建立帳號', 'auth-mode', { variant: 'text' })}</div>`}
             <a class="account-setup-link" href="/admin">${adminSetup ? '管理員初始設定' : '管理員登入'}</a>
+            ${policyLinks()}
           </div>`}
       </section>
     </main>`;
+}
+
+function renderDeletionPage() {
+  return `<main class="deletion-layout" id="main-content" tabindex="-1">
+    <section class="account-card deletion-card" aria-labelledby="deletion-heading">
+      <a href="/" class="deletion-brand"><img src="/assets/icon.svg" alt="" width="36" height="36">StudyMate 校園共讀</a>
+      <h1 id="deletion-heading">刪除 StudyMate 帳號</h1>
+      ${renderDeletionContent()}
+    </section>
+  </main>`;
+}
+
+function renderDeletionContent() {
+  if (deletionComplete) {
+    return `<p class="deletion-success" role="status">你的 StudyMate 帳號與相關資料已刪除。所有裝置上的 StudyMate 登入工作階段均已失效。</p>
+      <a class="button button-primary" href="/">返回 StudyMate</a>`;
+  }
+
+  const details = `<p class="account-description">驗證身分後，可以在這裡永久刪除帳號。系統會立即移除帳號資料、Google 連結、邀約、相關預約、配對、封鎖、相關檢舉與專注紀錄，並停止位置分享。刪除後無法復原。</p>`;
+  if (loading) return `${details}<p class="account-loading" role="status">正在連線…</p>`;
+  if (loadError) {
+    return `${details}<p class="account-error" role="alert">${escape(loadError)}</p>
+      ${button('重新連線', 'retry-bootstrap', { variant: 'primary' })}`;
+  }
+
+  const google = `<form class="dialog-form account-form" method="get" action="/api/auth/campus/start">
+    <input type="hidden" name="intent" value="delete"><input type="hidden" name="campus" value="any">
+    <button class="button button-primary account-submit" type="submit">使用 Google 驗證身分</button>
+  </form>`;
+  const notice = campusNotice ? `<p class="account-error campus-entry-notice" role="alert">${escape(campusNotice)}</p>` : '';
+  const account = state.account;
+  if (!account) {
+    return `${details}${notice}${campusLogin ? `<div class="deletion-google">${google}</div>` : ''}
+      <h2>使用電子郵件及密碼登入</h2>
+      ${passwordEntry(false, '登入 StudyMate')}`;
+  }
+
+  const member = `<p class="account-email deletion-member">目前登入的帳號為 <strong>${escape(account.googleEmail || account.email)}</strong></p>`;
+  const logout = `<div class="account-switch">${button('登出並切換帳號', 'logout', { variant: 'text' })}</div>`;
+  if (account.googleEmail && !deletionVerified) {
+    return `${details}${member}${notice}<p class="account-description">請用已連結的 Google 帳號重新驗證。若系統開啟瀏覽器，請在瀏覽器完成驗證與刪除。</p>
+      ${campusLogin ? google : '<p class="account-error">Google 驗證目前未開放，請稍後再試。</p>'}${logout}`;
+  }
+
+  return `${details}${member}
+    <form class="dialog-form account-form" data-delete-account>
+      ${account.googleEmail ? '<p>Google 身分已驗證。請在 5 分鐘內確認刪除。</p>' : `<label class="field"><span>目前的密碼</span><input type="password" name="password" autocomplete="current-password" required maxlength="128"></label>`}
+      <label class="field"><span>請輸入「刪除帳號」以確認</span><input name="confirmation" required autocomplete="off" maxlength="4" pattern="刪除帳號"></label>
+      <p class="account-error" data-request-error role="alert" hidden></p>
+      <button class="button account-submit delete-account-button" type="submit">永久刪除帳號</button>
+    </form>${logout}`;
 }
 
 function renderCampusPicker() {
@@ -568,7 +644,9 @@ function renderMatchPanel() {
         <label class="field"><span>你在哪個區域？</span><span class="select-wrap">
           <select name="region" required>${selectOptions(regions, region, '選擇校園區域')}</select>${icon('chevron')}
         </span></label>
-        <label class="check-field match-position-opt-in"><input type="checkbox" name="shareLocation"${matchAutoShare ? ' checked' : ''}>配對成功後，分享我的即時位置（10 分鐘）</label>
+        <p class="match-stop-detail" id="match-location-opt-in-note">${locationShareDisclosure}</p>
+        <label class="check-field match-position-opt-in"><input type="checkbox" name="shareLocation" aria-describedby="match-location-opt-in-note"${matchAutoShare ? ' checked' : ''}>配對成功後，分享我的即時位置（10 分鐘）</label>
+        ${communityRulesField()}
         <button type="submit" class="button button-lime">${icon('bolt')} ${match.status === 'expired' ? '重新配對' : '開始配對'}</button>
         <p role="alert" data-request-error hidden></p>
       </form>` : isMatched ? '' : `<div class="match-actions">
@@ -620,7 +698,7 @@ function renderMatchLocation() {
   const peerShare = liveMatchLocation(match.peerLocation);
   return `<section class="match-location" aria-labelledby="match-location-title">
     <h2 id="match-location-title">即時位置</h2>
-    <p class="match-stop-detail">開啟後，對方可在 10 分鐘內看到你移動中的位置。你可以隨時停止。</p>
+    <p class="match-stop-detail">${locationShareDisclosure}</p>
     ${myShare ? `<p class="match-shared-status">${icon('check')}分享中，有效至 ${timeFormat.format(myShare.expiresAt)}</p>` : ''}
     ${peerShare ? `<div class="match-peer-location">
       <p class="match-shared-status">${icon('pin')}對方的位置可查看至 ${timeFormat.format(peerShare.expiresAt)}</p>
@@ -669,7 +747,11 @@ function renderMatchItinerary() {
         </div>
       </li>
     </ol>` : '<p class="match-stop-detail">暫時無法載入集合點，請重新整理後再試。</p>'}
-    ${matchCommand('返回配對', 'dismiss', 'glass', 'rotate')}
+    <div class="match-stop-actions" role="group" aria-label="配對安全操作">
+      ${button('檢舉配對夥伴', 'match-safety', { glyph: 'flag', variant: 'glass', attrs: `data-value="report" data-id="${escape(match.ticketId)}"` })}
+      ${button('封鎖配對夥伴', 'match-safety', { variant: 'glass', attrs: `data-value="block" data-id="${escape(match.ticketId)}"` })}
+      ${matchCommand('返回配對', 'dismiss', 'glass', 'rotate')}
+    </div>
   </div>`;
 }
 
@@ -1246,9 +1328,12 @@ function showProfile() {
         ${selectField('style', '共讀習慣', STYLES, p.style)}
       </div>
       <p class="account-error" data-request-error role="alert" hidden></p>
+      ${policyLinks()}
+      ${communityRulesField()}
       <div class="form-actions"><button class="button button-primary" type="submit">儲存偏好</button>
       ${button('登出', 'logout')}</div>
-    </form>`, '共讀偏好會用於推薦邀約。');
+    </form>
+    <div class="delete-account-divider"><a class="delete-account-link" href="/delete-account">刪除帳號</a></div>`, '共讀偏好會用於推薦邀約。');
 }
 
 function showFilters() {
@@ -1335,6 +1420,7 @@ function showPublish(startNow = false) {
       <label class="field"><span>共讀說明（選填）</span><textarea name="note" rows="2" maxlength="180" placeholder="說明想一起讀什麼。">${escape(draft.note ?? '')}</textarea></label>
       <p class="form-note" data-campus-privacy>${icon('shield')} 實體邀約僅顯示概略校園區域。</p>
       <p class="form-note" data-publish-online-note role="status" hidden>${onlineScopeNote}</p>
+      ${communityRulesField()}
       <p class="account-error" data-request-error role="alert" hidden></p>
       <button class="button button-primary" type="submit">${icon('plus')} 發布邀約</button>
     </form>`, `${escape(campus.name)} · ${escape(campus.area)}`);
@@ -1360,6 +1446,7 @@ function showInviteEdit(id) {
       ${session.mode === 'online' ? '<p class="form-note">線上共讀</p>'
         : selectField('region', '校園區域', campusRegionNames(session.campusId), session.region)}
       <label class="field"><span>共讀說明（選填）</span><textarea name="note" rows="2" maxlength="180">${escape(session.note ?? '')}</textarea></label>
+      ${communityRulesField()}
       <p class="account-error" data-request-error role="alert" hidden></p>
       <button class="button button-primary" type="submit">${icon('check')} 儲存修改</button>
     </form>`, `${escape(campus?.name ?? session.school)} · ${formatSlot(session)}`);
@@ -1384,6 +1471,7 @@ function showDetails(id) {
       ${session.note ? `<p class="detail-note">${escape(session.note)}</p>` : ''}
       ${own ? '<p class="form-note">這是你發起的邀約。</p><a class="button button-secondary" href="#plans" data-view="plans">管理邀約</a>' : canJoin ? `<form data-form="join" data-id="${escape(id)}" class="dialog-form">
         <label class="check-field"><input type="checkbox" name="agree" required> 我確認可以參加這個時段。</label>
+        ${communityRulesField()}
         <p class="account-error" data-request-error role="alert" hidden></p>
         <button class="button button-primary" type="submit">送出加入申請</button>
       </form>` : reservation ? `<a class="button button-secondary" href="#plans" data-view="plans">${statusLabels[reservation.status]}・查看我的預約</a>` : '<p class="form-note">這個邀約目前無法加入。</p>'}
@@ -1398,10 +1486,23 @@ function showSafety(id, action) {
   const blockMessage = session.quickMatch ? `封鎖 ${escape(session.partner.name)} 後，你們將無法再配對。` : `封鎖後，${escape(session.host)} 的邀約會從探索頁隱藏。`;
   showDialog(report ? (session.quickMatch ? '檢舉共讀夥伴' : '檢舉邀約') : '封鎖夥伴', `
     <form class="dialog-form" data-form="${action}" data-id="${escape(id)}">
-      ${report ? selectField('reason', '檢舉原因', ['不當內容', '可疑邀約', '騷擾或安全疑慮', '其他'], '不當內容') : `<p>${blockMessage}</p>`}
+      ${report ? selectField('reason', '檢舉原因', reportReasons, '不當內容') : `<p>${blockMessage}</p>`}
       <p class="account-error" data-request-error role="alert" hidden></p>
       <button class="button button-primary" type="submit">${report ? '送出檢舉' : '確認封鎖'}</button>
     </form>`, report ? '檢舉會交給管理員處理。' : '');
+}
+
+function showMatchSafety(id, action) {
+  if (match.status !== 'matched' || match.ticketId !== id) return;
+  const report = action === 'report';
+  showDialog(report ? '檢舉配對夥伴' : '封鎖配對夥伴', `
+    <form class="dialog-form" data-form="match-safety" data-id="${escape(id)}" data-match-safety="${report ? 'report' : 'block'}">
+      ${report ? `${selectField('reason', '檢舉原因', reportReasons, '騷擾或安全疑慮')}
+        <label class="check-field"><input type="checkbox" name="blockPeer">同時封鎖配對夥伴</label>` : ''}
+      <p>封鎖會結束這次配對並停止雙方分享位置。你們之後也不會再由 StudyMate 配對。</p>
+      <p class="account-error" data-request-error role="alert" hidden></p>
+      <button class="button button-primary" type="submit">${report ? '送出檢舉' : '確認封鎖'}</button>
+    </form>`, report ? '只有管理員能查看檢舉。' : '');
 }
 
 function readInviteEdits(form, data) {
@@ -1412,7 +1513,7 @@ function readInviteEdits(form, data) {
     titleControl.reportValidity();
     return null;
   }
-  return { title, region: data.get('region') ?? '', note: String(data.get('note') ?? '').trim() };
+  return { title, region: data.get('region') ?? '', note: String(data.get('note') ?? '').trim(), communityRules: data.has('communityRules') };
 }
 
 async function handlePublish(form, data) {
@@ -1484,7 +1585,7 @@ async function runRequest(control, execute, errorNode) {
 
 async function updateViewData() {
   const currentView = view;
-  if (!state.account || needsGoogleLink() || !['plans', 'explore'].includes(view)) return;
+  if (deletionPage || !state.account || needsGoogleLink() || !['plans', 'explore'].includes(view)) return;
   try {
     if (!await refreshStudy() || currentView !== view || dialog.open || activeRequest) return;
     const mainFocused = document.activeElement === app.querySelector('main');
@@ -1501,12 +1602,13 @@ async function bootstrap() {
   loadError = '';
   render();
   try {
-    const { account, adminSetup: canSetup, campusLogin: canUseCampus } = await api('/account');
+    const { account, adminSetup: canSetup, campusLogin: canUseCampus, deletionVerified: canDelete } = await api('/account');
     adminSetup = canSetup;
     campusLogin = canUseCampus;
+    deletionVerified = canDelete === true;
     if (account) {
       bindAccount(account);
-      if (!needsGoogleLink()) {
+      if (!deletionPage && !needsGoogleLink()) {
         await refreshStudy();
         syncFocus();
         if (campusNotice) {
@@ -1520,7 +1622,7 @@ async function bootstrap() {
   } finally {
     loading = false;
     render();
-    void checkMatch();
+    if (!deletionPage) void checkMatch();
   }
 }
 
@@ -1583,7 +1685,14 @@ document.addEventListener('click', event => {
         : changeMatch({ action: value, ticketId: id }));
       break;
     case 'share-match-location':
-      shareMatchLocation();
+      showDialog('分享即時位置', `
+        <form class="dialog-form" data-form="match-location-consent">
+          <p>${locationShareDisclosure}</p>
+          <button class="button button-primary" type="submit">同意並開始分享</button>
+        </form>`);
+      break;
+    case 'match-safety':
+      showMatchSafety(id, value);
       break;
     case 'match-map':
       void showMatchDestination(value);
@@ -1702,13 +1811,46 @@ document.addEventListener('change', event => {
 
 app.addEventListener('submit', event => {
   const form = event.target;
+  if (form.hasAttribute('data-delete-account')) {
+    event.preventDefault();
+    const accountId = state.account?.id;
+    if (!accountId) return;
+    const data = Object.fromEntries(new FormData(form));
+    void runRequest(event.submitter, async () => {
+      try {
+        await api('/auth/delete-account', { method: 'POST', data });
+      } catch (error) {
+        if (error.status !== 403 || !state.account?.googleEmail) throw error;
+        deletionVerified = false;
+        campusNotice = error.message;
+        render();
+        return;
+      }
+      try {
+        localStorage.removeItem(timerKey(accountId));
+        localStorage.removeItem(`studymate:campus:${accountId}`);
+      } catch {
+        // Account deletion still succeeds when browser storage is restricted.
+      }
+      resetAccount();
+      deletionComplete = true;
+      render();
+      app.querySelector('main').focus({ preventScroll: true });
+    }, form.querySelector('[data-request-error]'));
+    return;
+  }
   if (form.hasAttribute('data-match-form')) {
     event.preventDefault();
     if (activeRequest) return;
     const data = new FormData(form);
     matchAutoShare = data.has('shareLocation');
     const region = data.get('region');
-    void runRequest(event.submitter, () => changeMatch({ action: 'start', campusId: selectedCampusId, region }), form.querySelector('[data-request-error]'));
+    const communityRules = data.has('communityRules');
+    void runRequest(event.submitter, async () => {
+      const accountId = state.account?.id;
+      await changeMatch({ action: 'start', campusId: selectedCampusId, region, communityRules });
+      if (communityRules && state.account?.id === accountId) state.communityRulesAccepted = true;
+    }, form.querySelector('[data-request-error]'));
     return;
   }
   if (form.hasAttribute('data-match-cafe')) {
@@ -1726,7 +1868,7 @@ app.addEventListener('submit', event => {
     bindAccount(account);
     campusNotice = '';
     try {
-      if (!needsGoogleLink()) {
+      if (!deletionPage && !needsGoogleLink()) {
         await refreshStudy();
         syncFocus();
       }
@@ -1734,7 +1876,7 @@ app.addEventListener('submit', event => {
       loadError = error.message;
     }
     render();
-    void checkMatch();
+    if (!deletionPage) void checkMatch();
     app.querySelector('main').focus({ preventScroll: true });
   }, form.querySelector('[data-request-error]'));
 });
@@ -1762,8 +1904,11 @@ async function submitDialog(form, data) {
   const { id, form: action } = form.dataset;
   switch (form.dataset.form) {
     case 'profile': {
-      const { account } = await api('/profile', { method: 'PATCH', data: Object.fromEntries(data) });
+      const { account, communityRulesAccepted } = await api('/profile', {
+        method: 'PATCH', data: { ...Object.fromEntries(data), communityRules: data.has('communityRules') },
+      });
       state.account = account;
+      state.communityRulesAccepted = communityRulesAccepted;
       dialog.close();
       render();
       app.querySelector('.profile-trigger').focus();
@@ -1778,11 +1923,25 @@ async function submitDialog(form, data) {
       break;
     case 'join':
       if (!data.has('agree')) return;
-      if (!await mutateStudy(`/study/sessions/${encodeURIComponent(id)}/join`)) return;
+      if (!await mutateStudy(`/study/sessions/${encodeURIComponent(id)}/join`, { communityRules: data.has('communityRules') })) return;
       dialog.close();
       navigate('plans');
       toast('已送出加入申請，等待對方確認。');
       break;
+    case 'match-location-consent':
+      dialog.close();
+      shareMatchLocation();
+      break;
+    case 'match-safety': {
+      const operation = form.dataset.matchSafety;
+      const blockPeer = data.has('blockPeer');
+      await changeMatch({ action: operation, ticketId: id, reason: data.get('reason'), blockPeer });
+      dialog.close();
+      if (operation === 'block' || blockPeer) app.querySelector('#match-page-title')?.focus({ preventScroll: true });
+      const message = operation === 'block' ? '已封鎖配對夥伴。' : blockPeer ? '已檢舉並封鎖配對夥伴。' : '已送出檢舉。';
+      toast(message);
+      break;
+    }
     case 'report':
     case 'block': {
       const quickMatch = getSession(id)?.quickMatch;
@@ -1797,6 +1956,7 @@ async function submitDialog(form, data) {
 }
 
 window.addEventListener('hashchange', () => {
+  if (deletionPage) return;
   const next = activeView();
   if (next === view) return;
   if (next === 'explore') explorePane = 'list';
@@ -1810,6 +1970,7 @@ window.addEventListener('hashchange', () => {
 });
 
 document.addEventListener('visibilitychange', () => {
+  if (deletionPage) return;
   if (document.visibilityState === 'visible' && !activeRequest && !loading) {
     void updateViewData();
     void checkMatch();

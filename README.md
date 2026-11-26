@@ -52,16 +52,26 @@
 
 StudyMate 只要求 `openid` 和 `email` 權限。正式使用 Google 登入前，請依 Google 的應用程式發布規定設定可驗證的網域；學校也可能依 Workspace 政策限制第三方登入。[Google OAuth 政策](https://developers.google.com/identity/protocols/oauth2/policies)
 
-## Android APK
+## Android APK 與 Google Play App Bundle
 
 Android 8.0 以上可安裝。App 連接 [StudyMate 正式站](https://couach-production.up.railway.app/)，可使用電子郵件註冊或登入。定位需在使用時允許，步行導航會開啟裝置上的地圖應用程式或瀏覽器。
 
-在 Windows 使用 JDK 21、Android API 35 以上的 `android.jar` 和 Android SDK Build Tools 36。將簽署金鑰密碼設為目前 PowerShell 程序的 `STUDYMATE_KEYSTORE_PASSWORD` 環境變數，然後在儲存庫執行下列指令。請保存簽署金鑰，後續版本需要使用同一把金鑰才可覆蓋安裝。
+在 Windows 使用 JDK 21、Android API 36 的 `android.jar` 和 Android SDK Build Tools 36。將簽署金鑰密碼設為目前 PowerShell 程序的 `STUDYMATE_KEYSTORE_PASSWORD` 環境變數，然後在儲存庫執行下列指令。請保存簽署金鑰，後續版本需要使用同一把金鑰才可覆蓋安裝。
 
 ```powershell
 .\android\build-apk.ps1 -JdkHome $jdk -PlatformJar $platformJar -BuildTools $buildTools `
   -OutputApk $outputApk -KeyStore $keyStore -KeyAlias $keyAlias
 ```
+
+上傳 Google Play 時使用 Android App Bundle。額外準備 Google Maven 的 AAPT2 及 bundletool，然後執行下列指令。[Android App Bundle 指南](https://developer.android.com/build/building-cmdline#build_bundle)
+
+```powershell
+.\android\build-apk.ps1 -JdkHome $jdk -PlatformJar $platformJar -BuildTools $buildTools `
+  -OutputAab $outputAab -Aapt2Path $mavenAapt2 -BundleTool $bundletool `
+  -KeyStore $keyStore -KeyAlias $keyAlias
+```
+
+Google Play 可使用 [StudyMate 隱私權政策](https://couach-production.up.railway.app/privacy) 和 [刪除帳號頁](https://couach-production.up.railway.app/delete-account)。使用者可以從「我的帳號」進入刪除流程。第一次發布、編輯邀約、提出加入申請、儲存個人資料或開始配對前，需閱讀並同意[共讀守則](https://couach-production.up.railway.app/community-rules)。
 
 登入頁、導覽和瀏覽器分頁使用同一個黃色書本標誌 `assets/icon.svg`。
 「校園精選」的咖啡廳插畫 `assets/campus-cafe.webp` 由內建 ImageGen 生成，以復古紙感描繪窗邊的咖啡、筆記本與校園拱廊。

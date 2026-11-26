@@ -112,11 +112,12 @@ function renderOverview({ accounts, reports, counts }) {
     <section class="tool-panel admin-panel" aria-labelledby="reports-title">
       <h2 id="reports-title">${icon('flag')} 檢舉紀錄</h2>
       ${reports.length ? `<div class="admin-table-wrap"><table>
-        <thead><tr><th scope="col">邀約</th><th scope="col">檢舉人</th><th scope="col">原因</th><th scope="col">時間</th><th scope="col">處理狀態</th></tr></thead>
+        <thead><tr><th scope="col">檢舉項目</th><th scope="col">檢舉人</th><th scope="col">原因</th><th scope="col">時間</th><th scope="col">處理狀態</th></tr></thead>
         <tbody>${reports.map(report => `
-          <tr><td>${escape(report.title)}</td><td>${escape(report.reporter)}</td><td>${escape(report.reason)}</td>
+          <tr><td>${escape(report.title)}${report.reportedEmail ? `<br><small>被檢舉帳號 ${escape(report.reportedEmail)}</small>` : ''}</td><td>${escape(report.reporter)}</td><td>${escape(report.reason)}</td>
             <td><time datetime="${escape(report.createdAt)}">${dateOf(report.createdAt)}</time></td>
-            <td>${report.status === 'open' ? `<button type="button" class="button button-secondary" data-resolve="${escape(report.id)}">標記已處理</button>` : '<span class="status-pill status-live">已處理</span>'}</td></tr>
+            <td>${report.status === 'open' ? `<button type="button" class="button button-secondary" data-resolve="${escape(report.id)}">標記已處理</button>
+              ${report.canClose ? `<button type="button" class="button button-secondary" data-close-reported-invitation="${escape(report.id)}">關閉邀約並處理</button>` : ''}` : '<span class="status-pill status-live">已處理</span>'}</td></tr>
         `).join('')}</tbody>
       </table></div>` : '<p class="admin-empty">目前沒有檢舉。</p>'}
     </section>
@@ -259,6 +260,9 @@ page.addEventListener('click', event => {
   if ('closePassword' in control.dataset) control.closest('dialog').close();
   if (control.dataset.resolve) {
     perform(control, () => api(`/api/admin/reports/${encodeURIComponent(control.dataset.resolve)}/resolve`, {}));
+  }
+  if (control.dataset.closeReportedInvitation && window.confirm('關閉後將取消這場邀約待處理及已確認的預約，並將這筆檢舉標記為已處理。確定要關閉嗎？')) {
+    perform(control, () => api(`/api/admin/reports/${encodeURIComponent(control.dataset.closeReportedInvitation)}/close-invitation`, {}));
   }
 });
 
