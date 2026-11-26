@@ -68,7 +68,8 @@
   background: #fffefa;
 }
 
-.workspace .session-card { border-inline-start: 3px solid var(--teal-deep); }
+.workspace .session-card,
+.workspace .plan-list { border: 2px solid var(--line); }
 .workspace .session-card .card-footer { border-color: #dfded3; }
 .workspace .status-live { border: 1px solid #a1cabe; background: #e1f1e9; }
 .workspace .status-later { border: 1px solid #dfc982; background: #fcf0c5; }
@@ -99,12 +100,7 @@
 .workspace .explore-support .focus-summary .tile-icon { border-color: #c4a146; }
 .workspace .summary-counts strong { color: var(--teal-deep); }
 
-.workspace .plan-list {
-  min-width: 0;
-  border-top: 3px solid var(--teal-deep);
-}
-
-.workspace .plan-list:nth-child(2) { border-top-color: #c59333; }
+.workspace .plan-list { min-width: 0; }
 .workspace .plan-list > h2 {
   gap: .6rem;
   color: var(--teal-deep);
