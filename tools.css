@@ -42,6 +42,8 @@
 .focus-timer,
 .focus-history {
   padding: clamp(1.1rem, 2.8vw, 1.85rem);
+  border: 2px solid var(--line);
+  border-radius: 16px;
 }
 
 .focus-timer {
@@ -50,9 +52,10 @@
   min-height: 23rem;
   align-content: center;
   text-align: center;
+  box-shadow: 4px 4px 0 var(--line);
   background:
-    repeating-linear-gradient(135deg, var(--aqua) 0 6px, transparent 6px 12px) right 1rem top 1rem / 4.5rem .4rem no-repeat,
-    #fffefb;
+    repeating-linear-gradient(135deg, #96cbc3 0 7px, #c8e5dd 7px 14px) right 0 top 0 / 5.1rem .45rem no-repeat,
+    #fffcf1;
 }
 
 .focus-timer h2,
@@ -63,7 +66,13 @@
 }
 
 .focus-timer h2 .icon {
-  color: var(--teal);
+  width: 1.85rem;
+  height: 1.85rem;
+  padding: .24rem;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--yellow);
+  color: var(--teal-deep);
 }
 
 .timer-presets {
@@ -75,11 +84,11 @@
 }
 
 .timer-presets button {
-  padding: .48rem .72rem;
+  min-height: 40px;
+  padding: .4rem .72rem;
   border: 1px solid var(--line);
-  border-radius: 3px;
-  background: #fff;
-  box-shadow: 1px 1px 0 var(--line);
+  border-radius: 5px;
+  background: #fffefb;
   color: var(--teal-deep);
   font: inherit;
   font-size: .875rem;
@@ -94,13 +103,21 @@
 .timer-presets button[aria-pressed='true'] {
   background: var(--yellow);
   color: var(--ink);
+  box-shadow: 2px 2px 0 var(--line);
 }
 
 .timer-display {
-  margin: 1rem 0 1.15rem;
-  color: var(--ink);
-  font-size: clamp(3.9rem, 10vw, 6.2rem);
-  font-weight: 800;
+  width: min(100%, 26rem);
+  margin: 1.15rem 0 1.3rem;
+  padding: .88rem .4rem 1.04rem;
+  border: 3px solid var(--line);
+  border-radius: 12px;
+  background:
+    repeating-linear-gradient(135deg, transparent 0 13px, #ffffff0f 13px 15px) right bottom / 5.75rem 100% no-repeat,
+    var(--teal-deep);
+  color: #fff1b8;
+  font-size: clamp(3.35rem, 9vw, 6.2rem);
+  font-weight: 850;
   font-variant-numeric: tabular-nums;
   line-height: 1;
   letter-spacing: -.055em;
@@ -115,7 +132,24 @@
 
 .timer-actions .button {
   min-width: 6rem;
+  min-height: 44px;
   justify-content: center;
+  border: 2px solid var(--line);
+  border-radius: 4px;
+  box-shadow: 2px 2px 0 var(--line);
+}
+
+.timer-actions .button:active { box-shadow: 1px 1px 0 var(--line); }
+
+.focus-history {
+  background: #fffefa;
+  box-shadow: 3px 3px 0 var(--border);
+}
+
+.focus-history h2 {
+  padding-bottom: .55rem;
+  border-bottom: 2px solid var(--teal-deep);
+  color: var(--teal-deep);
 }
 
 .focus-totals {
@@ -127,13 +161,18 @@
 
 .focus-totals > div {
   display: grid;
-  padding: .85rem 1rem;
+  gap: .15rem;
+  padding: .66rem clamp(.55rem, 2.5vw, 1rem);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-bottom: 2px solid var(--teal-deep);
+  border-radius: 8px;
   background: var(--wash);
 }
 
-.focus-totals > div:nth-child(2) { background: #fff7de; }
+.focus-totals > div:nth-child(2) {
+  border-bottom-color: #b08022;
+  background: #fff3d0;
+}
 
 .focus-totals strong {
   color: var(--ink);
@@ -150,11 +189,10 @@
 
 .focus-history .empty-state {
   margin: 0;
-  padding: 1rem 0 0;
-  border: 0;
-  border-top: 1px solid var(--border);
-  border-radius: 0;
-  background: transparent;
+  padding: .78rem .85rem;
+  border: 1px dashed #c9c3b4;
+  border-radius: 8px;
+  background: var(--paper);
   box-shadow: none;
   color: var(--muted);
   text-align: left;
@@ -191,8 +229,9 @@
   width: 1.5rem;
   height: 1.5rem;
   place-items: center;
-  border-radius: 4px;
-  background: var(--wash);
+  border: 1px solid #abcfc5;
+  border-radius: 50%;
+  background: #e2f1e8;
   color: var(--teal-deep);
 }
 
@@ -203,73 +242,100 @@
 
 .place-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(1.15rem, 3vw, 2rem);
 }
 
 .place-card {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .place-visual {
-  --place-wash: var(--wash);
-  --place-accent: var(--aqua);
+  --place-wash: #d7ece7;
+  --place-accent: #409a92;
+  --place-stripe: #ffffff24;
   display: grid;
-  min-height: 6.6rem;
-  margin: .75rem .75rem 0;
+  min-height: clamp(8.6rem, 16vw, 12rem);
   place-items: center;
   border: 3px solid var(--line);
-  border-radius: 12px;
+  border-radius: 16px;
   background:
-    linear-gradient(110deg, var(--place-wash) 0 54%, transparent 54%),
-    repeating-linear-gradient(135deg, var(--place-accent) 0 8px, var(--paper) 8px 18px);
+    linear-gradient(108deg, var(--place-wash) 0 53%, transparent 53%),
+    repeating-linear-gradient(135deg, transparent 0 10px, var(--place-stripe) 10px 20px),
+    var(--place-accent);
   color: var(--teal-deep);
 }
 
-.place-card:nth-child(2) .place-visual {
-  --place-wash: #dfebe5;
-  --place-accent: #85bbb2;
+.place-card:nth-child(4n + 2) .place-visual {
+  --place-wash: #f5df9f;
+  --place-accent: #d5ad48;
 }
 
-.place-card:nth-child(3) .place-visual { --place-wash: #fbedbc; }
+.place-card:nth-child(4n + 3) .place-visual {
+  --place-wash: #e0e9f0;
+  --place-accent: #749caf;
+}
 
-.place-card:nth-child(4) .place-visual { --place-wash: var(--pink); }
+.place-card:nth-child(4n + 4) .place-visual {
+  --place-wash: #f4dfd8;
+  --place-accent: #b77a68;
+}
 
 .place-visual .icon {
-  width: 3.4rem;
-  height: 3.4rem;
-  padding: .75rem;
+  width: clamp(3.65rem, 6vw, 4.5rem);
+  height: clamp(3.65rem, 6vw, 4.5rem);
+  padding: .73rem;
   border: 2px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
   background: #fffefb;
-  box-shadow: 2px 2px 0 var(--line);
+  box-shadow: 3px 3px 0 var(--line);
+  transform: rotate(-5deg);
 }
 
 .place-copy {
   display: flex;
   flex: 1;
   flex-direction: column;
-  align-items: flex-start;
-  padding: 1.25rem;
+  align-items: center;
+  padding: .8rem .6rem .35rem;
+  text-align: center;
 }
 
 .place-copy .eyebrow {
-  margin: 0 0 .3rem;
+  margin: 0 0 .22rem;
+  color: var(--teal-deep);
+  font-size: .84rem;
+  font-weight: 750;
 }
 
 .place-copy .place-region {
+  justify-content: center;
   margin: .4rem 0 0;
   font-size: .875rem;
 }
 
+.place-copy .place-region .icon { flex: 0 0 auto; }
+
 .place-copy p {
+  max-width: 36ch;
   margin: .65rem 0 1rem;
   color: var(--muted);
 }
 
 .place-copy .button {
   margin-top: auto;
+  min-height: 44px;
+  border: 2px solid var(--line);
+  border-radius: 3px;
+  background: #fffefa;
+  box-shadow: var(--panel-shadow);
 }
+
+.place-copy .button:hover { background: #fff4cc; }
+.place-copy .button:active { box-shadow: 1px 1px 0 var(--line); }
 
 .places-note {
   margin-top: 1rem;

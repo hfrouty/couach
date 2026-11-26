@@ -23,7 +23,7 @@ const publicFiles = new Map([
   ['/admin/', 'admin.html'],
   ...[
     'app.mjs', 'admin.mjs', 'campus-map.mjs', 'campus-places.mjs', 'campuses.mjs', 'matching.mjs', 'sample-data.mjs', 'study-tools.mjs', 'icons.mjs',
-    'styles.css', 'tools.css', 'account.css', 'admin.css', 'campus-map.css',
+    'styles.css', 'tools.css', 'account.css', 'admin.css', 'campus-map.css', 'interior.css',
     'assets/icon.svg', 'assets/library-study.webp', 'assets/study-pop.webp', 'assets/study-banner.webp',
     'assets/campus-cafe.webp', 'assets/campus-mascot.webp', 'assets/paper-grain.webp',
   ].map(name => [`/${name}`, name]),

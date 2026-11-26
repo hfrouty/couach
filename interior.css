@@ -1,0 +1,157 @@
+/* Signed-in navigation and the shared surfaces around invitations and maps. */
+.workspace {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.sidebar {
+  background: #fffdf6;
+  border-color: #ccc9bb;
+}
+
+.sidebar .brand strong,
+.workspace .mobile-brand strong { color: var(--teal-deep); }
+
+.sidebar .nav a { border-radius: 8px; }
+.sidebar .nav a[aria-current] {
+  border-color: var(--line);
+  background: linear-gradient(90deg, var(--yellow) 0 5px, transparent 5px), #e4f2eb;
+  box-shadow: 2px 2px 0 var(--line);
+  font-weight: 770;
+}
+
+.sidebar-campus {
+  background: #f0f8f2;
+  border-color: #8db4ab;
+}
+
+.sidebar-campus-icon { background: #dcefe5; }
+
+.workspace .topbar {
+  border-color: #cbcabb;
+  background: #fffdf6;
+}
+
+.workspace .campus-label {
+  padding: .35rem .65rem;
+  border: 1px solid #a8c9bd;
+  border-radius: 8px;
+  color: var(--teal-deep);
+  background: #f0f8f2;
+}
+
+.workspace .profile-trigger .avatar {
+  border: 1px solid #a8924d;
+  background: #fff0b8;
+  color: #5a461c;
+}
+
+.workspace .explore-toolbar { border-color: #bdbbae; }
+
+.workspace #discovery-heading h1 {
+  padding-bottom: .2rem;
+  color: var(--teal-deep);
+  background: linear-gradient(transparent 69%, #f9d463a6 69% 91%, transparent 91%);
+  letter-spacing: -.025em;
+}
+
+.workspace .segmented { border-color: #c7c8b6; background: #efece0; }
+.workspace .segmented button[aria-pressed="true"] {
+  background: #fffefa;
+  box-shadow: inset 0 0 0 1px var(--line), 1px 2px 0 var(--line);
+}
+
+.workspace .session-card,
+.workspace .plan-list,
+.workspace .explore-support .aside-panel {
+  border-color: #c2bfb1;
+  background: #fffefa;
+}
+
+.workspace .session-card { border-inline-start: 3px solid var(--teal-deep); }
+.workspace .session-card .card-footer { border-color: #dfded3; }
+.workspace .status-live { border: 1px solid #a1cabe; background: #e1f1e9; }
+.workspace .status-later { border: 1px solid #dfc982; background: #fcf0c5; }
+
+.workspace .session-card .button-card {
+  border-color: #95b8ad;
+  border-radius: 5px;
+  background: #f4faf4;
+}
+
+.workspace .discovery .empty-state {
+  border-color: #c7c3b5;
+  border-style: dashed;
+  background: #fffcf1;
+}
+
+.workspace .discovery .tile-icon,
+.workspace .explore-support .tile-icon {
+  border: 1px solid #9ebcaf;
+  color: var(--teal-deep);
+}
+
+.workspace .explore-support .focus-summary {
+  border-color: #d7bb61;
+  background: #fff5d4;
+}
+
+.workspace .explore-support .focus-summary .tile-icon { border-color: #c4a146; }
+.workspace .summary-counts strong { color: var(--teal-deep); }
+
+.workspace .plan-list {
+  min-width: 0;
+  border-top: 3px solid var(--teal-deep);
+}
+
+.workspace .plan-list:nth-child(2) { border-top-color: #c59333; }
+.workspace .plan-list > h2 {
+  gap: .6rem;
+  color: var(--teal-deep);
+  font-size: 1.1rem;
+  font-weight: 800;
+}
+
+.workspace .plan-list > h2 .icon {
+  width: 29px;
+  height: 29px;
+  padding: 5px;
+  border: 1px solid #a5c6b7;
+  border-radius: 7px;
+  background: #e5f4ea;
+}
+
+.workspace .plan-list:nth-child(2) > h2 .icon { border-color: #d5bd6b; background: #fff0b8; }
+.workspace .plan-list .empty-state { border: 1px dashed #d3cbaf; background: #faf6e9; }
+
+.workspace .plan-list[aria-labelledby="own-heading"] .empty-state {
+  padding-inline-start: 3.55rem;
+  background: #faf6e9 url("./assets/campus-mascot.webp") .6rem center / 2.55rem auto no-repeat;
+  text-align: start;
+}
+
+.workspace .campus-map-header {
+  padding: .65rem .75rem .65rem .9rem;
+  border-inline-start: 3px solid var(--teal-deep);
+  background: #edf5ec;
+}
+
+.workspace .campus-map-header :is(h1, h2) { color: var(--teal-deep); }
+.workspace .campus-map-content { --map-border: #b7c1b3; }
+.workspace .campus-map-place-filter[aria-pressed="true"] { box-shadow: inset 0 -2px 0 #779f91; }
+.workspace .campus-map-places { background-color: #fffefa; }
+
+#dialog .dialog-header {
+  padding-block-end: .65rem;
+  border-block-end: 1px solid #d6d4c6;
+}
+
+#dialog .dialog-header h2 { color: var(--teal-deep); }
+
+@media (max-width: 760px) {
+  .sidebar .nav a[aria-current] {
+    border-color: #8db4ab;
+    background: linear-gradient(0deg, var(--yellow) 0 3px, transparent 3px), #e4f2eb;
+    box-shadow: none;
+  }
+}
